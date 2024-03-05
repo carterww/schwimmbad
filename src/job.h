@@ -2,7 +2,6 @@
 #define SCHW_JOB_H
 
 #include <stdint.h>
-#include <time.h>
 #include <pthread.h>
 #include <semaphore.h>
 
