@@ -21,9 +21,12 @@ extern "C" {
 // TMP
 #define SCHW_SCHED_PRIORITY
 
+typedef uint64_t jid;
+
 struct job {
   union {
     struct {
+      jid job_id;
       void *(*job_func)(void *arg);
       void *job_arg;
     };

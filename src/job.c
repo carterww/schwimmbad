@@ -16,7 +16,8 @@
  * @param fifo: Pointer to the job_fifo struct to initialize.
  * @param cap: The maximum number of jobs that can be stored in the queue.
  * For now, this cannot be changed after initialization.
- * @return: 0 on success, errno on failure (from malloc).
+ * @return: 0 on success, or an error.
+ * @error errno: If malloc fails, errno is returnd.
  */
 int job_fifo_init(struct job_fifo *fifo, uint32_t cap) {
   struct job *jobs = malloc(cap * sizeof(struct job));
@@ -59,7 +60,8 @@ int job_fifo_push(struct job_fifo *fifo, struct job *job) {
  * If there is no job, then the function will return a non-zero errno value.
  * @param fifo: Pointer to the job_fifo struct to remove the job from.
  * @param buf: Pointer to a buffer to hold popped job.
- * @return: 0 on success, an errno error otherwise
+ * @return: 0 on success, an error otherwise.
+ * @error ESRCH: There are no jobs on the queue.
  */
 int job_fifo_pop(struct job_fifo *fifo, struct job *buf) {
   pthread_mutex_lock(&fifo->rwlock);
@@ -82,7 +84,8 @@ int job_fifo_pop(struct job_fifo *fifo, struct job *buf) {
  * Free the FIFO job queue.
  * @summary: Free the memory allocated for the job queue and reset the fields.
  * @param fifo: Pointer to the job_fifo struct to free.
- * @return: 0 on success, EBUSY if the queue is not empty.
+ * @return: 0 on success, or an error.
+ * @error EBUSY: The job queue is not empty.
  */
 int job_fifo_free(struct job_fifo *fifo) {
   pthread_mutex_lock(&fifo->rwlock);
@@ -106,37 +109,12 @@ int job_fifo_free(struct job_fifo *fifo) {
 
 #ifdef SCHW_SCHED_PRIORITY
 
-/*
- * The number of jobs that have been put onto a thread.
- * This will be used to age the jobs in the priority queue.
- * Each job will have a timestamp that indicates when it was put onto the queue
- * based on this number. Periodically, the jobs will be aged by comparing the
- * timestamp to the number of jobs that have been put onto the queue.
- */
-static uint32_t jobs_dispatched = 0;
-
-/*
- * Get the difference between two job timestamps.
- * @summary: Get the difference between two job timestamps. The jobs_ran
- * can wrap back to 0, so this is taken into account.
- * @param start: The start timestamp.
- * @param end: The end timestamp.
- * @return: The difference between the two timestamps.
- */
-static inline uint32_t get_time_diff(uint32_t start, uint32_t end) {
-  if (likely(end >= start))
-    return end - start;
-  return UINT32_MAX - start + end;
-}
-
 // Binary heap functions for operating on the priority queue.
 static void bheap_bup(struct job_key *keys, uint32_t idx);
 static void bheap_bdown(struct job_key *keys, uint32_t idx, uint32_t len);
 static void bheap_push(struct job_key *keys, uint32_t len, struct job_key *key);
 static struct job_key bheap_pop(struct job_key *keys, uint32_t len);
-
-static void pqueue_age(struct job_pqueue *pqueue);
-static inline void set_new_priority(struct job_key *key);
+static void bheap_heapify(struct job_key *keys, uint32_t len);
 
 /*
  * Initialize priority job queue.
@@ -144,7 +122,8 @@ static inline void set_new_priority(struct job_key *key);
  * @param pqueue: Pointer to the job_pqueue struct to initialize.
  * @param cap: The maximum number of jobs that can be stored in the queue.
  * For now, this cannot be changed after initialization.
- * @return: 0 on success, errno on failure (from malloc).
+ * @return: 0 on success, or an error.
+ * @error errno: If malloc failed, the error code errno is returned.
  */
 int job_pqueue_init(struct job_pqueue *pqueue, uint32_t cap) {
   struct job_key *keys = malloc(cap * sizeof(struct job_key));
@@ -175,7 +154,22 @@ int job_pqueue_init(struct job_pqueue *pqueue, uint32_t cap) {
   return 0;
 }
 
+/*
+ * Push a job onto the priority queue.
+ * @summary: Push a job on the priority queue. The job's data is copied into
+ * the queue. A lower priority number correlates with a higher priority.
+ * Blocks if there is no room in the queue. Latency spikes can occur when
+ * the jobs are being aged. This only happens periodically.
+ * @param pqueue: Priority Job Queue
+ * @param job: Job to push to the queue. The job is copied, so the passed
+ * in job can be discarded after the call.
+ * @param priority: The job's priority. Lower number = Higher priority.
+ * @return: 0 on success, or an error.
+ * @error ENOBUFS: There is no free space in the queue. The thread should
+ * block if there is no space, so if this is returned, there is a bug.
+ */
 int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority) {
+  // I don't know if I like the blocking policy. May change later
   sem_wait(&pqueue->free_slots);
   pthread_mutex_lock(&pqueue->rwlock);
 
@@ -184,21 +178,12 @@ int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority
     return ENOBUFS;
   }
 
-  /* 
-   * Unlikely since SCHW_INVOKE_AGE = 128. I'd change this if
-   * invoking more frequently
-   */
-  if (unlikely(jobs_dispatched % SCHW_INVOKE_AGE == 0)) {
-    pqueue_age(pqueue);
-  }
-
   struct job_key new_key = {
     .priority = priority,
     .job = pqueue->first_free,
-    .last_age = jobs_dispatched
+    .last_age = 0
   };
   bheap_push(pqueue->keys, pqueue->len, &new_key);
-  ++jobs_dispatched;
 
   struct job *next_free = pqueue->first_free->next_free;
   *pqueue->first_free = *job;
@@ -209,6 +194,15 @@ int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority
   return 0;
 }
 
+/*
+ * Pop a job off the queue.
+ * @summary: Pops the highest priority job off the queue. Copies the
+ * job into buf.
+ * @param pqueue: Job priority queue.
+ * @param buf: Buffer to copy the job that was popped off the queue.
+ * @return: 0 on success, or an error.
+ * @error ESRCH: There are no jobs in the queue.
+ */
 int job_pqueue_pop(struct job_pqueue *pqueue, struct job *buf) {
   pthread_mutex_lock(&pqueue->rwlock);
 
@@ -229,6 +223,14 @@ int job_pqueue_pop(struct job_pqueue *pqueue, struct job *buf) {
 
 }
 
+/*
+ * Frees the priority job queue.
+ * @summary: Frees the priority job queue. If the queue is not empty,
+ * EBUSY is returned.
+ * @param pqueue: Job priority queue.
+ * @return: 0 on success, or an error.
+ * @error EBUSY: The queue is not empty.
+ */
 int job_pqueue_free(struct job_pqueue *pqueue) {
   pthread_mutex_lock(&pqueue->rwlock);
   if (pqueue->len > 0) {
@@ -248,6 +250,7 @@ int job_pqueue_free(struct job_pqueue *pqueue) {
   return 0;
 }
 
+/* Bubble up an item in the binary heap */
 static void bheap_bup(struct job_key *keys, uint32_t idx) {
   if (idx == 0)
     return;
@@ -267,6 +270,7 @@ static void bheap_bup(struct job_key *keys, uint32_t idx) {
   }
 }
 
+/* Bubble down an item in the binary heap */
 static void bheap_bdown(struct job_key *keys, uint32_t idx, uint32_t len) {
   while (idx <= (UINT32_MAX / 2) + 2) {
     uint32_t l = 2 * idx + 1, r = 2 * idx + 2;
@@ -287,11 +291,13 @@ static void bheap_bdown(struct job_key *keys, uint32_t idx, uint32_t len) {
   }
 }
 
+/* Push an item to the binary heap */
 static void bheap_push(struct job_key *keys, uint32_t len, struct job_key *key) {
   keys[len++] = *key;
   bheap_bup(keys, len - 1);
 }
 
+/* Pop the item with the lowest key off the binary heap */
 static struct job_key bheap_pop(struct job_key *keys, uint32_t len) {
   struct job_key job = keys[0];
   keys[0] = keys[--len];
@@ -299,25 +305,14 @@ static struct job_key bheap_pop(struct job_key *keys, uint32_t len) {
   return job;
 }
 
-static void pqueue_age(struct job_pqueue *pqueue) {
-  struct job_key *keys = pqueue->keys;
-
-  for (uint32_t i = 0; i < pqueue->len; i++) {
-    struct job_key *key = &keys[i];
-    set_new_priority(key);
-    key->last_age = jobs_dispatched;
+/* 
+ * Construct a heap from an array which satisfies the shape property of a
+ * binary heap.
+ */
+static void bheap_heapify(struct job_key *keys, uint32_t len) {
+  for (uint32_t i = len / 2; i > 0; --i) {
+    bheap_bdown(keys, i, len);
   }
-}
-
-static void set_new_priority(struct job_key *key) {
-  uint32_t timediff = get_time_diff(key->last_age, jobs_dispatched);
-
-  int32_t new_priority = key->priority - timediff; // How will this work?
-
-  if (new_priority > key->priority)
-    key->priority = INT32_MIN;
-  else
-    key->priority = new_priority;
 }
 
 #endif // SCHW_SCHED_PRIORITY
