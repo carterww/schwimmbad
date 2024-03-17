@@ -82,28 +82,29 @@ static void *start_thread(void *arg) {
 #ifdef SCHW_SCHED_PRIORITY
   struct job_pqueue *queue = (struct job_pqueue *)t_arg->job_queue;
 #endif
+
+  // Main thread loop
   while (1) {
     struct job j = {0};
 
-    int pop_err;
-    if ((pop_err = job_pop(queue, &j)) == 0) {
-      pthread_mutex_lock(&t_arg->pool->rwlock);
-      ++t_arg->pool->working_threads;
-      pthread_mutex_unlock(&t_arg->pool->rwlock);
-    }
-    while (pop_err == 0) {
+    // Wait for a job to be available
+    while (sem_wait(&queue->jobs_in_q) == -1 && errno == EINTR)
+      ;
+    pthread_mutex_lock(&t_arg->pool->rwlock);
+    ++t_arg->pool->working_threads;
+    pthread_mutex_unlock(&t_arg->pool->rwlock);
+
+    // Pop jobs until the queue is empty
+    while (job_pop(queue, &j) == 0) {
       t_arg->thread->job_id = j.job_id;
       void *res = j.job_func(j.job_arg);
-      pop_err = job_pop(queue, &j);
     }
 
-    // Move back onto free thread LL
     pthread_mutex_lock(&t_arg->pool->rwlock);
     --t_arg->pool->working_threads;
     pthread_mutex_unlock(&t_arg->pool->rwlock);
   }
 
-  // This should never happen
   free(arg);
   return (void *) 1;
 }

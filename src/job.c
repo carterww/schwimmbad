@@ -68,9 +68,6 @@ int job_fifo_push(struct job_fifo *fifo, struct job *job) {
  * @error ESRCH: There are no jobs on the queue.
  */
 int job_pop(struct job_fifo *fifo, struct job *buf) {
-  // Prevent cases where signal interrupts this call
-  while (sem_wait(&fifo->jobs_in_q))
-    ;
   pthread_mutex_lock(&fifo->rwlock);
 
   if (fifo->len == 0) {
