@@ -19,18 +19,19 @@
  * @return: 0 on success, or an error.
  * @error errno: If malloc fails, errno is returnd.
  */
-int job_fifo_init(struct job_fifo *fifo, uint32_t cap) {
+int job_init(struct job_fifo *fifo, uint32_t cap) {
   struct job *jobs = malloc(cap * sizeof(struct job));
   if (unlikely(jobs == NULL)) {
     return errno;
   }
   pthread_mutex_init(&fifo->rwlock, NULL);
-  fifo->jobs = jobs;
+  fifo->job_pool = jobs;
   fifo->head = 0;
   fifo->tail = 0;
   fifo->cap = cap;
-  sem_init(&fifo->free_slots, 0, cap);
   fifo->len = 0;
+  sem_init(&fifo->free_slots, 0, cap);
+  sem_init(&fifo->jobs_in_q, 0, 0);
   return 0;
 }
 
@@ -43,14 +44,17 @@ int job_fifo_init(struct job_fifo *fifo, uint32_t cap) {
  * @return: 0 on success.
  */
 int job_fifo_push(struct job_fifo *fifo, struct job *job) {
-  sem_wait(&fifo->free_slots);
+  // Prevent cases where signal interrupts this call
+  while (sem_wait(&fifo->free_slots))
+    ;
   pthread_mutex_lock(&fifo->rwlock);
 
-  fifo->jobs[fifo->tail] = *job;
+  fifo->job_pool[fifo->tail] = *job;
   fifo->tail = (fifo->tail + 1) % fifo->cap;
   ++fifo->len;
 
   pthread_mutex_unlock(&fifo->rwlock);
+  sem_post(&fifo->jobs_in_q);
   return 0;
 }
 
@@ -63,7 +67,10 @@ int job_fifo_push(struct job_fifo *fifo, struct job *job) {
  * @return: 0 on success, an error otherwise.
  * @error ESRCH: There are no jobs on the queue.
  */
-int job_fifo_pop(struct job_fifo *fifo, struct job *buf) {
+int job_pop(struct job_fifo *fifo, struct job *buf) {
+  // Prevent cases where signal interrupts this call
+  while (sem_wait(&fifo->jobs_in_q))
+    ;
   pthread_mutex_lock(&fifo->rwlock);
 
   if (fifo->len == 0) {
@@ -71,7 +78,7 @@ int job_fifo_pop(struct job_fifo *fifo, struct job *buf) {
     return ESRCH;
   }
 
-  *buf = fifo->jobs[fifo->head];
+  *buf = fifo->job_pool[fifo->head];
   fifo->head = (fifo->head + 1) % fifo->cap;
   --fifo->len;
 
@@ -87,7 +94,7 @@ int job_fifo_pop(struct job_fifo *fifo, struct job *buf) {
  * @return: 0 on success, or an error.
  * @error EBUSY: The job queue is not empty.
  */
-int job_fifo_free(struct job_fifo *fifo) {
+int job_free(struct job_fifo *fifo) {
   pthread_mutex_lock(&fifo->rwlock);
   if (fifo->len > 0) {
     pthread_mutex_unlock(&fifo->rwlock);
@@ -95,13 +102,11 @@ int job_fifo_free(struct job_fifo *fifo) {
   }
   pthread_mutex_unlock(&fifo->rwlock);
   pthread_mutex_destroy(&fifo->rwlock);
-  free(fifo->jobs);
-  fifo->jobs = NULL;
-  fifo->head = 0;
-  fifo->tail = 0;
-  fifo->cap = 0;
+  free(fifo->job_pool);
+  fifo->job_pool = NULL;
+  fifo->head = fifo->tail = fifo->cap = fifo->len = 0;
   sem_destroy(&fifo->free_slots);
-  fifo->len = 0;
+  sem_destroy(&fifo->jobs_in_q);
   return 0;
 }
 
@@ -125,7 +130,7 @@ static void bheap_heapify(struct job_key *keys, uint32_t len);
  * @return: 0 on success, or an error.
  * @error errno: If malloc failed, the error code errno is returned.
  */
-int job_pqueue_init(struct job_pqueue *pqueue, uint32_t cap) {
+int job_init(struct job_pqueue *pqueue, uint32_t cap) {
   struct job_key *keys = malloc(cap * sizeof(struct job_key));
   if (unlikely(keys == NULL)) {
     return errno;
@@ -203,7 +208,7 @@ int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority
  * @return: 0 on success, or an error.
  * @error ESRCH: There are no jobs in the queue.
  */
-int job_pqueue_pop(struct job_pqueue *pqueue, struct job *buf) {
+int job_pop(struct job_pqueue *pqueue, struct job *buf) {
   pthread_mutex_lock(&pqueue->rwlock);
 
   if (pqueue->len == 0) {
@@ -231,7 +236,7 @@ int job_pqueue_pop(struct job_pqueue *pqueue, struct job *buf) {
  * @return: 0 on success, or an error.
  * @error EBUSY: The queue is not empty.
  */
-int job_pqueue_free(struct job_pqueue *pqueue) {
+int job_free(struct job_pqueue *pqueue) {
   pthread_mutex_lock(&pqueue->rwlock);
   if (pqueue->len > 0) {
     pthread_mutex_unlock(&pqueue->rwlock);

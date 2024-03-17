@@ -16,11 +16,6 @@ extern "C" {
 #define SCHW_SCHED_PRIORITY
 #endif
 
-#define SCHW_MAX_JOBS 256
-
-// TMP
-#define SCHW_SCHED_PRIORITY
-
 typedef uint64_t jid;
 
 struct job {
@@ -38,27 +33,27 @@ struct job {
 
 struct job_fifo {
   pthread_mutex_t rwlock;
-  struct job *jobs;
+  struct job *job_pool;
   uint32_t head;
   uint32_t tail;
   uint32_t cap;
-  sem_t free_slots;
   uint32_t len;
+  sem_t free_slots;
+  sem_t jobs_in_q;
 };
 
-inline int job_fifo_init(struct job_fifo *fifo, uint32_t cap);
+int job_init(struct job_fifo *fifo, uint32_t cap);
 int job_fifo_push(struct job_fifo *fifo, struct job *job);
-int job_fifo_pop(struct job_fifo *fifo, struct job *buf);
-int job_fifo_free(struct job_fifo *fifo);
+int job_pop(struct job_fifo *fifo, struct job *buf);
+int job_free(struct job_fifo *fifo);
 
 #endif // SCHW_SCHED_FIFO
 
 #ifdef SCHW_SCHED_PRIORITY
 
 struct job_key {
-  int32_t priority;
-  uint32_t last_age;
   struct job *job;
+  int32_t priority;
 };
 
 struct job_pqueue {
@@ -67,14 +62,15 @@ struct job_pqueue {
   struct job *job_pool;
   struct job *first_free;
   sem_t free_slots;
+  sem_t jobs_in_queue;
   uint32_t cap;
   uint32_t len;
 };
 
-inline int job_pqueue_init(struct job_pqueue *pqueue, uint32_t cap);
+int job_init(struct job_pqueue *pqueue, uint32_t cap);
 int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority);
-int job_pqueue_pop(struct job_pqueue *pqueue, struct job *buf);
-int job_pqueue_free(struct job_pqueue *pqueue);
+int job_pop(struct job_pqueue *pqueue, struct job *buf);
+int job_free(struct job_pqueue *pqueue);
 
 #endif // SCHW_SCHED_PRIORITY
 
