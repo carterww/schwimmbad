@@ -55,13 +55,6 @@ int job_fifo_free(struct job_fifo *fifo);
 
 #ifdef SCHW_SCHED_PRIORITY
 
-/*
- * How often should the scheduler invoke the aging algorithm.
- * 128 signifies that the scheduler will invoke the aging algorithm
- * every 128th time it is called.
- */
-#define SCHW_INVOKE_AGE 128
-
 struct job_key {
   int32_t priority;
   uint32_t last_age;
