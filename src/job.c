@@ -13,40 +13,58 @@
 /*
  * Initialize FIFO job queue
  * @summary: Allocate memory for the job queue and initialize the fields.
- * @param fifo: Pointer to the job_fifo struct to initialize.
+ * @param queue: Pointer to the job_queue struct to initialize.
  * @param cap: The maximum number of jobs that can be stored in the queue.
- * For now, this cannot be changed after initialization.
  * @return: 0 on success, or an error.
- * @error errno: If malloc fails, errno is returnd.
+ * @error errno: If malloc, pthread_mutex_init, or sem_init fails, errno is
+ * returned.
  */
-int job_init(struct job_fifo *fifo, uint32_t cap) {
+int job_init(struct job_queue *queue, uint32_t cap) {
+  struct job_fifo *fifo = &queue->queue;
   struct job *jobs = malloc(cap * sizeof(struct job));
   if (unlikely(jobs == NULL)) {
     return errno;
   }
-  pthread_mutex_init(&fifo->rwlock, NULL);
+  if (pthread_mutex_init(&fifo->rwlock, NULL)) {
+    goto free_jobs;
+  }
   fifo->job_pool = jobs;
   fifo->head = 0;
   fifo->tail = 0;
   fifo->cap = cap;
   fifo->len = 0;
-  sem_init(&fifo->free_slots, 0, cap);
-  sem_init(&fifo->jobs_in_q, 0, 0);
+  if (sem_init(&fifo->free_slots, 0, cap)) {
+    goto free_rwlock;
+  }
+  if (sem_init(&fifo->jobs_in_q, 0, 0)) {
+    goto free_free_slots;
+  }
   return 0;
+// Fall throughs to free resources if an error occurs.
+free_free_slots:
+  sem_destroy(&fifo->free_slots);
+free_rwlock:
+  pthread_mutex_destroy(&fifo->rwlock);
+free_jobs:
+  free(jobs);
+  return errno;
 }
 
 /*
  * Push a job onto the FIFO queue.
  * @summary: Add a job at to the end of the queue if there is space.
- * If there is no space, then the thread will block until there is space.
- * @param fifo: Pointer to the job_fifo struct to add the job to.
- * @param job: Pointer to the job to add to the queue.
- * @return: 0 on success.
+ * If there is no space, then the function will return an error.
+ * @param queue: Pointer to the job_queue struct that holds the
+ * job_fifo struct.
+ * @param job: Pointer to the job.
+ * @return: 0 on success. An error otherwise.
+ * @error EAGAIN: There is no space in the queue.
  */
-int job_fifo_push(struct job_fifo *fifo, struct job *job) {
-  // Prevent cases where signal interrupts this call
-  while (sem_wait(&fifo->free_slots))
-    ;
+int job_push(struct job_queue *queue, struct job *job) {
+  struct job_fifo *fifo = &queue->queue;
+  if (sem_trywait(&fifo->free_slots)) {
+    return errno;
+  }
   pthread_mutex_lock(&fifo->rwlock);
 
   fifo->job_pool[fifo->tail] = *job;
@@ -60,14 +78,15 @@ int job_fifo_push(struct job_fifo *fifo, struct job *job) {
 
 /*
  * Pop a job from the FIFO queue.
- * @summary: Remove a job from the front of the queue if there is one.
+ * @summary: Remove a job from the front of the queue, if there is one.
  * If there is no job, then the function will return a non-zero errno value.
- * @param fifo: Pointer to the job_fifo struct to remove the job from.
- * @param buf: Pointer to a buffer to hold popped job.
+ * @param queue: Pointer to the job_queue struct.
+ * @param buf: Pointer to the buffer to copy the job into.
  * @return: 0 on success, an error otherwise.
  * @error ESRCH: There are no jobs on the queue.
  */
-int job_pop(struct job_fifo *fifo, struct job *buf) {
+int job_pop(struct job_queue *queue, struct job *buf) {
+  struct job_fifo *fifo = &queue->queue;
   pthread_mutex_lock(&fifo->rwlock);
 
   if (fifo->len == 0) {
@@ -87,11 +106,12 @@ int job_pop(struct job_fifo *fifo, struct job *buf) {
 /*
  * Free the FIFO job queue.
  * @summary: Free the memory allocated for the job queue and reset the fields.
- * @param fifo: Pointer to the job_fifo struct to free.
+ * @param queue: Pointer to the job_queue struct to free.
  * @return: 0 on success, or an error.
- * @error EBUSY: The job queue is not empty.
+ * @error EBUSY: The job queue is not empty and connot be freed.
  */
-int job_free(struct job_fifo *fifo) {
+int job_free(struct job_queue *queue) {
+  struct job_fifo *fifo = &queue->queue;
   pthread_mutex_lock(&fifo->rwlock);
   if (fifo->len > 0) {
     pthread_mutex_unlock(&fifo->rwlock);
@@ -100,8 +120,6 @@ int job_free(struct job_fifo *fifo) {
   pthread_mutex_unlock(&fifo->rwlock);
   pthread_mutex_destroy(&fifo->rwlock);
   free(fifo->job_pool);
-  fifo->job_pool = NULL;
-  fifo->head = fifo->tail = fifo->cap = fifo->len = 0;
   sem_destroy(&fifo->free_slots);
   sem_destroy(&fifo->jobs_in_q);
   return 0;
@@ -127,7 +145,8 @@ static void bheap_heapify(struct job_key *keys, uint32_t len);
  * @return: 0 on success, or an error.
  * @error errno: If malloc failed, the error code errno is returned.
  */
-int job_init(struct job_pqueue *pqueue, uint32_t cap) {
+int job_init(struct job_queue *queue, uint32_t cap) {
+  struct job_pqueue *pqueue = &queue->queue;
   struct job_key *keys = malloc(cap * sizeof(struct job_key));
   if (unlikely(keys == NULL)) {
     return errno;
@@ -159,9 +178,8 @@ int job_init(struct job_pqueue *pqueue, uint32_t cap) {
 /*
  * Push a job onto the priority queue.
  * @summary: Push a job on the priority queue. The job's data is copied into
- * the queue. A lower priority number correlates with a higher priority.
- * Blocks if there is no room in the queue. Latency spikes can occur when
- * the jobs are being aged. This only happens periodically.
+ * the queue. A lower priority number correlates with a higher priority. If
+ * there is no space in the queue, the function will return an error.
  * @param pqueue: Priority Job Queue
  * @param job: Job to push to the queue. The job is copied, so the passed
  * in job can be discarded after the call.
@@ -169,10 +187,14 @@ int job_init(struct job_pqueue *pqueue, uint32_t cap) {
  * @return: 0 on success, or an error.
  * @error ENOBUFS: There is no free space in the queue. The thread should
  * block if there is no space, so if this is returned, there is a bug.
+ * @error EAGAIN: There is no space in the queue.
+ * @error errno: If sem_trywait fails, errno is returned.
  */
-int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority) {
-  // I don't know if I like the blocking policy. May change later
-  sem_wait(&pqueue->free_slots);
+int job_push(struct job_queue *queue, struct job *job) {
+  struct job_pqueue *pqueue = &queue->queue;
+  if (sem_trywait(&pqueue->free_slots)) {
+    return errno;
+  }
   pthread_mutex_lock(&pqueue->rwlock);
 
   // If this occurs, there is a bug.
@@ -181,9 +203,8 @@ int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority
   }
 
   struct job_key new_key = {
-    .priority = priority,
-    .job = pqueue->first_free,
-    .last_age = 0
+      .priority = job->job.priority,
+      .job = pqueue->first_free,
   };
   bheap_push(pqueue->keys, pqueue->len, &new_key);
 
@@ -205,7 +226,8 @@ int job_pqueue_push(struct job_pqueue *pqueue, struct job *job, int32_t priority
  * @return: 0 on success, or an error.
  * @error ESRCH: There are no jobs in the queue.
  */
-int job_pop(struct job_pqueue *pqueue, struct job *buf) {
+int job_pop(struct job_queue *queue, struct job *buf) {
+  struct job_pqueue *pqueue = &queue->queue;
   pthread_mutex_lock(&pqueue->rwlock);
 
   if (pqueue->len == 0) {
@@ -222,7 +244,6 @@ int job_pop(struct job_pqueue *pqueue, struct job *buf) {
   pthread_mutex_unlock(&pqueue->rwlock);
   sem_post(&pqueue->free_slots);
   return 0;
-
 }
 
 /*
@@ -233,7 +254,8 @@ int job_pop(struct job_pqueue *pqueue, struct job *buf) {
  * @return: 0 on success, or an error.
  * @error EBUSY: The queue is not empty.
  */
-int job_free(struct job_pqueue *pqueue) {
+int job_free(struct job_queue *queue) {
+  struct job_pqueue *pqueue = &queue->queue;
   pthread_mutex_lock(&pqueue->rwlock);
   if (pqueue->len > 0) {
     pthread_mutex_unlock(&pqueue->rwlock);
@@ -242,13 +264,8 @@ int job_free(struct job_pqueue *pqueue) {
   pthread_mutex_unlock(&pqueue->rwlock);
   pthread_mutex_destroy(&pqueue->rwlock);
   free(pqueue->keys);
-  pqueue->keys = NULL;
   free(pqueue->job_pool);
-  pqueue->job_pool = NULL;
-  pqueue->first_free = NULL;
   sem_destroy(&pqueue->free_slots);
-  pqueue->cap = 0;
-  pqueue->len = 0;
   return 0;
 }
 
@@ -294,7 +311,8 @@ static void bheap_bdown(struct job_key *keys, uint32_t idx, uint32_t len) {
 }
 
 /* Push an item to the binary heap */
-static void bheap_push(struct job_key *keys, uint32_t len, struct job_key *key) {
+static void bheap_push(struct job_key *keys, uint32_t len,
+                       struct job_key *key) {
   keys[len++] = *key;
   bheap_bup(keys, len - 1);
 }
@@ -307,7 +325,7 @@ static struct job_key bheap_pop(struct job_key *keys, uint32_t len) {
   return job;
 }
 
-/* 
+/*
  * Construct a heap from an array which satisfies the shape property of a
  * binary heap.
  */

@@ -2,80 +2,72 @@
 
 #include <pthread.h>
 
+#include "common.h"
 #include "job.h"
 #include "thread.h"
 
-static jid job_counter = 0;
-static pthread_spinlock_t job_counter_lock;
-
-static struct thread_pool pool = { 0 };
-
-#ifdef SCHW_SCHED_FIFO
-static struct job_fifo queue = { 0 };
-
-jid schw_push(void *(*job_func)(void*), void *arg) {
-  if (!job_func)
+jid schw_push(struct schw_pool *pool, struct schw_job *job) {
+  if (!job->job_func)
     return -1;
 
-  struct job j = { 0 };
-  pthread_spin_lock(&job_counter_lock);
-  j.job_id = job_counter++;
-  pthread_spin_unlock(&job_counter_lock);
+  struct job j = {0};
+  pthread_spin_lock(&pool->jid_helper.lock);
+  j.id = pool->jid_helper.current;
+  if (unlikely(pool->jid_helper.current == INT64_MAX))
+    pool->jid_helper.current = -1;
+  ++pool->jid_helper.current;
+  pthread_spin_unlock(&pool->jid_helper.lock);
+  j.job = *job;
 
-  j.job_func = job_func;
-  j.job_arg = arg;
-  job_fifo_push(&queue, &j);
-  return j.job_id;
+  if (job_push(pool->queue, &j) != 0)
+    return -1;
+  return j.id;
 }
 
-#endif
+int schw_init(struct schw_pool *pool, uint32_t num_threads,
+              uint32_t queue_len) {
 
-#ifdef SCHW_SCHED_PRIORITY
-static struct job_pqueue queue = { 0 };
-
-jid schw_push(void *(*job_func)(void*), void *arg, int32_t priority);
-#endif
-
-int schw_init(uint32_t num_threads, uint32_t queue_len) {
-  pthread_spin_init(&job_counter_lock, 0);
-
-  int err = job_init(&queue, queue_len);
+  int err = job_init(pool->queue, queue_len);
   if (err != 0)
     return err;
 
-  err = thread_pool_init(&pool, (void *)&queue, num_threads);
+  err = thread_pool_init(pool, num_threads);
   if (err != 0)
     return err;
+
+  pool->jid_helper.current = 0;
+  pthread_spin_init(&pool->jid_helper.lock, 0);
 
   return 0;
 }
 
-void schw_free() {
-  thread_pool_free(&pool);
-  job_free(&queue);
+// TODO: Move checks to this function from the two
+// frees to make sure they are always called
+// together.
+int schw_free(struct schw_pool *pool) {
+  job_free(pool->queue);
+  thread_pool_free(pool);
+  return 0;
 }
 
 // TODO: wrap in mutex to ensure integrity
 // and correctness of value
-uint32_t schw_threads() {
-  return pool.num_threads;
+uint32_t schw_threads(struct schw_pool *pool) { return pool->num_threads; }
+
+// TODO: same as schw_threads
+uint32_t schw_working_threads(struct schw_pool *pool) {
+  return pool->working_threads;
 }
 
 // TODO: same as schw_threads
-uint32_t schw_working_threads() {
-  return pool.working_threads;
+uint32_t schw_queue_len(struct schw_pool *pool) {
+  return pool->queue->queue.len;
 }
 
 // TODO: same as schw_threads
-uint32_t schw_queue_len() {
-  return queue.len;
+uint32_t schw_queue_cap(struct schw_pool *pool) {
+  return pool->queue->queue.len;
 }
 
-// TODO: same as schw_threads
-uint32_t schw_queue_cap() {
-  return queue.cap;
-}
-
-int schw_pool_resize(int32_t change) { return 1; }
-int schw_queue_resize(int32_t change) { return 1; }
-
+int schw_pool_resize(struct schw_pool *pool, int32_t change) { return 1; }
+int schw_queue_resize(struct schw_pool *pool, int32_t change) { return 1; }
