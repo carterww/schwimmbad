@@ -16,10 +16,14 @@
  * @param queue: Pointer to the job_queue struct to initialize.
  * @param cap: The maximum number of jobs that can be stored in the queue.
  * @return: 0 on success, or an error.
+ * @error EINVAL: The queue pointer is NULL.
  * @error errno: If malloc, pthread_mutex_init, or sem_init fails, errno is
  * returned.
  */
 int job_init(struct job_queue *queue, uint32_t cap) {
+  if (queue == NULL) {
+    return EINVAL;
+  }
   struct job_fifo *fifo = &queue->queue;
   struct job *jobs = malloc(cap * sizeof(struct job));
   if (unlikely(jobs == NULL)) {
@@ -59,8 +63,12 @@ free_jobs:
  * @param job: Pointer to the job.
  * @return: 0 on success. An error otherwise.
  * @error EAGAIN: There is no space in the queue.
+ * @error EINVAL: The queue or job pointer is NULL.
  */
 int job_push(struct job_queue *queue, struct job *job) {
+  if (!(job && queue)) {
+    return EINVAL;
+  }
   struct job_fifo *fifo = &queue->queue;
   if (sem_trywait(&fifo->free_slots)) {
     return errno;
@@ -83,16 +91,18 @@ int job_push(struct job_queue *queue, struct job *job) {
  * @param queue: Pointer to the job_queue struct.
  * @param buf: Pointer to the buffer to copy the job into.
  * @return: 0 on success, an error otherwise.
- * @error ESRCH: There are no jobs on the queue.
+ * @error EAGAIN: There are no jobs on the queue.
+ * @error EINVAL: The queue or buf pointer is NULL.
  */
 int job_pop(struct job_queue *queue, struct job *buf) {
-  struct job_fifo *fifo = &queue->queue;
-  pthread_mutex_lock(&fifo->rwlock);
-
-  if (fifo->len == 0) {
-    pthread_mutex_unlock(&fifo->rwlock);
-    return ESRCH;
+  if (!(queue && buf)) {
+    return EINVAL;
   }
+  struct job_fifo *fifo = &queue->queue;
+  if (sem_trywait(&fifo->jobs_in_q)) {
+    return errno;
+  }
+  pthread_mutex_lock(&fifo->rwlock);
 
   *buf = fifo->job_pool[fifo->head];
   fifo->head = (fifo->head + 1) % fifo->cap;
@@ -143,9 +153,13 @@ static void bheap_heapify(struct job_key *keys, uint32_t len);
  * @param cap: The maximum number of jobs that can be stored in the queue.
  * For now, this cannot be changed after initialization.
  * @return: 0 on success, or an error.
+ * @error EINVAL: The queue pointer is NULL.
  * @error errno: If malloc failed, the error code errno is returned.
  */
 int job_init(struct job_queue *queue, uint32_t cap) {
+  if (queue == NULL) {
+    return EINVAL;
+  }
   struct job_pqueue *pqueue = &queue->queue;
   struct job_key *keys = malloc(cap * sizeof(struct job_key));
   if (unlikely(keys == NULL)) {
@@ -185,12 +199,14 @@ int job_init(struct job_queue *queue, uint32_t cap) {
  * in job can be discarded after the call.
  * @param priority: The job's priority. Lower number = Higher priority.
  * @return: 0 on success, or an error.
- * @error ENOBUFS: There is no free space in the queue. The thread should
- * block if there is no space, so if this is returned, there is a bug.
  * @error EAGAIN: There is no space in the queue.
+ * @error EINVAL: The queue or job pointer is NULL.
  * @error errno: If sem_trywait fails, errno is returned.
  */
 int job_push(struct job_queue *queue, struct job *job) {
+  if (!(job && queue)) {
+    return EINVAL;
+  }
   struct job_pqueue *pqueue = &queue->queue;
   if (sem_trywait(&pqueue->free_slots)) {
     return errno;
@@ -199,7 +215,7 @@ int job_push(struct job_queue *queue, struct job *job) {
 
   // If this occurs, there is a bug.
   if (unlikely(pqueue->first_free == NULL)) {
-    return ENOBUFS;
+    return EAGAIN;
   }
 
   struct job_key new_key = {
@@ -214,6 +230,7 @@ int job_push(struct job_queue *queue, struct job *job) {
   ++pqueue->len;
 
   pthread_mutex_unlock(&pqueue->rwlock);
+  sem_post(&pqueue->jobs_in_q);
   return 0;
 }
 
@@ -224,22 +241,25 @@ int job_push(struct job_queue *queue, struct job *job) {
  * @param pqueue: Job priority queue.
  * @param buf: Buffer to copy the job that was popped off the queue.
  * @return: 0 on success, or an error.
- * @error ESRCH: There are no jobs in the queue.
+ * @return EAGAIN: There are no jobs in the queue.
+ * @return EINVAL: The queue or buf pointer is NULL.
  */
 int job_pop(struct job_queue *queue, struct job *buf) {
-  struct job_pqueue *pqueue = &queue->queue;
-  pthread_mutex_lock(&pqueue->rwlock);
-
-  if (pqueue->len == 0) {
-    pthread_mutex_unlock(&pqueue->rwlock);
-    return ESRCH;
+  if (!(queue && buf)) {
+    return EINVAL;
   }
+  struct job_pqueue *pqueue = &queue->queue;
+  if (sem_trywait(&pqueue->jobs_in_q)) {
+    return errno;
+  }
+  pthread_mutex_lock(&pqueue->rwlock);
 
   struct job_key key = bheap_pop(pqueue->keys, pqueue->len);
   *buf = *key.job;
 
   key.job->next_free = pqueue->first_free;
   pqueue->first_free = key.job;
+  --pqueue->len;
 
   pthread_mutex_unlock(&pqueue->rwlock);
   sem_post(&pqueue->free_slots);

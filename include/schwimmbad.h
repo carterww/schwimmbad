@@ -10,13 +10,6 @@ extern "C" {
 
 typedef int64_t jid;
 
-// Default scheduling policy will be FIFO
-#ifndef SCHW_SCHED_PRIORITY
-#define SCHW_SCHED_FIFO
-#else
-#define SCHW_SCHED_PRIORITY
-#endif
-
 struct schw_jid_helper {
   jid current;
   pthread_spinlock_t lock;
