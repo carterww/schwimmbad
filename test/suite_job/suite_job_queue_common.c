@@ -27,7 +27,7 @@ void tearDown(void) {
 /*
  * @summary: Ensure the init function does not accept NULL pointers.
  */
-void test_job_queue_init_common_NULL(void) {
+void test_job_queue_common_init_NULL(void) {
   int init_res = job_init(NULL, CAP);
   TEST_ASSERT_EQUAL(EINVAL, init_res);
 }
@@ -54,7 +54,7 @@ void test_job_queue_common_init(void) {
 /*
  * @summary: Ensure the push function does not accept NULL pointers.
  */
-void test_job_queue_push_common_NULL(void) {
+void test_job_queue_common_push_NULL(void) {
   struct job job = { 0 };
   int push_res = job_push(NULL, &job);
   TEST_ASSERT_EQUAL(EINVAL, push_res);
@@ -67,7 +67,7 @@ void test_job_queue_push_common_NULL(void) {
  * The queue should be full after this test. Ensure the push function
  * returns EAGAIN when the queue is full.
  */
-void test_job_queue_push_common(void) {
+void test_job_queue_common_push(void) {
   for (jid i = 0; i < CAP; ++i) {
     struct job job = { 0 };
     job.id = i;
@@ -90,7 +90,7 @@ void test_job_queue_push_common(void) {
 /*
  * @summary: Ensure the pop function does not accept NULL pointers.
  */
-void test_job_queue_pop_common_NULL(void) {
+void test_job_queue_common_pop_NULL(void) {
   struct job job = { 0 };
   int pop_res = job_pop(NULL, &job);
   TEST_ASSERT_EQUAL(EINVAL, pop_res);
@@ -101,7 +101,7 @@ void test_job_queue_pop_common_NULL(void) {
 /*
  * @summary: Ensure the pop function updates the queue correctly.
  */
-void test_job_queue_pop_common(void) {
+void test_job_queue_common_pop(void) {
   struct job buf = { 0 };
   int no_job_res = job_pop(&queue, &buf);
   TEST_ASSERT_EQUAL(EAGAIN, no_job_res);
@@ -129,10 +129,7 @@ void test_job_queue_pop_common(void) {
 }
 
 void run_common_tests(void) {
-  RUN_TEST(test_job_queue_init_common_NULL);
-  RUN_TEST(test_job_queue_common_init);
-  RUN_TEST(test_job_queue_push_common_NULL);
-  RUN_TEST(test_job_queue_push_common);
-  RUN_TEST(test_job_queue_pop_common_NULL);
-  RUN_TEST(test_job_queue_pop_common);
+  RUN_TEST(test_job_queue_common_init_NULL);
+  RUN_TEST(test_job_queue_common_push_NULL);
+  RUN_TEST(test_job_queue_common_pop_NULL);
 }

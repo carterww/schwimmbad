@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -34,6 +35,9 @@ struct start_thread_arg {
 };
 
 int thread_pool_init(struct schw_pool *pool, uint32_t num_threads) {
+  if (pool == NULL) {
+    return EINVAL;
+  }
   struct thread *threads = malloc(num_threads * sizeof(struct thread));
   if (unlikely(threads == NULL)) {
     return errno;
@@ -69,14 +73,17 @@ int thread_pool_init(struct schw_pool *pool, uint32_t num_threads) {
 }
 
 int thread_pool_free(struct schw_pool *pool) {
+  if (pool == NULL) {
+    return EINVAL;
+  }
   pthread_mutex_lock(&pool->rwlock);
   if (pool->working_threads > 0) {
     pthread_mutex_unlock(&pool->rwlock);
     return EBUSY;
   }
 
-  for (; pool->threads < pool->threads + pool->num_threads; ++pool->threads) {
-    pthread_cancel(pool->threads->tid);
+  for (uint32_t i = 0; i < pool->num_threads; ++i) {
+    pthread_cancel(pool->threads[i].tid);
   }
 
   pthread_mutex_unlock(&pool->rwlock);
@@ -98,6 +105,7 @@ static void *start_thread(void *arg) {
   if (error != 0)
     goto error;
 
+  t_arg->thread->job_id = -1;
   // Main thread loop
   while (1) {
     // Wait for a job to be available. This is a cancellation point.
@@ -125,6 +133,8 @@ error:
 
 #ifdef THREAD_POOL_DYNAMIC_SIZING
 
-int thread_pool_resize(struct schw_pool *pool, int32_t change) {}
+int thread_pool_resize(struct schw_pool *pool, int32_t change) {
+  return -1;
+}
 
 #endif // THREAD_POOL_DYNAMIC_SIZING

@@ -5,7 +5,6 @@
 #include <semaphore.h>
 #include <stdint.h>
 
-#include "job.h"
 #include "schwimmbad.h"
 
 #ifdef __cplusplus
@@ -13,7 +12,7 @@ extern "C" {
 #endif
 
 // SHOULD BE IFNDEF WHEN IMPLEMENTED
-#ifdef DISABLE_DYNAMIC_SIZING
+#ifndef DISABLE_DYNAMIC_SIZING
 #define THREAD_POOL_DYNAMIC_SIZING
 #endif
 
@@ -28,6 +27,7 @@ struct thread {
  * @param pool: The thread pool to initialize.
  * @param num_threads: The number of threads to start.
  * @return: 0 on success, error code on failure.
+ * @error EINVAL: num_threads is 0 or pool is NULL.
  * @error: errno when malloc, pthread_create, or pthread_detach fails.
  */
 int thread_pool_init(struct schw_pool *pool, uint32_t num_threads);

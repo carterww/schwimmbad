@@ -1,6 +1,9 @@
 #include "schwimmbad.h"
 
+#include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "common.h"
 #include "job.h"
@@ -27,6 +30,11 @@ jid schw_push(struct schw_pool *pool, struct schw_job *job) {
 int schw_init(struct schw_pool *pool, uint32_t num_threads,
               uint32_t queue_len) {
 
+  if (pool == NULL)
+    return EINVAL;
+  pool->queue = malloc(sizeof(struct job_queue));
+  if (pool->queue == NULL)
+    return errno;
   int err = job_init(pool->queue, queue_len);
   if (err != 0)
     return err;
