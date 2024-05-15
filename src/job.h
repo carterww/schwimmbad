@@ -11,79 +11,12 @@
 extern "C" {
 #endif
 
-/*
- * A job that is stored in the job queue. The job contains a
- * unique identifier, a function pointer to the job function,
- * and a void pointer to the argument for the job function.
- * The jobs form a singly linked list of free slots when there
- * is no job in the slot. This implementation is only used when
- * the scheduling policy is PRIORITY.
- */
 struct job {
   union {
-    struct {
-      jid id;
-      struct schw_job job;
-    };
+    struct schw_job job;
     struct job *next_free;
   };
 };
-
-/*
- * @summary: Initialize the job queue with the given capacity.
- * This function has two different implementations based on the
- * scheduling policy chosen at compile time. If the policy is
- * FIFO, then the job queue will be implemented as a circular
- * buffer. If the policy is PRIORITY, then the job queue will
- * be implemented as a priority queue. To see the implementation
- * specific descriptions, see the comments for job_init in
- * job.c.
- * @param queue: The job queue to initialize.
- * @param cap: The capacity of the job queue.
- * @return: 0 on success, error code on failure.
- * @error: errno when malloc, sem_init, or pthread_mutex_init fails.
- */
-int job_init(struct job_queue *queue, uint32_t cap);
-
-/*
- * @summary: Push a job onto the queue. This function is
- * has two implementations, one for FIFO and one for priority.
- * The job will be copied into the queue. If there are no free slots
- * in the queue, the function will return an error.
- * @param queue: The job queue to push onto.
- * @param job: The job to push onto the queue.
- * @return: 0 on success, error code on failure.
- * @errror: EAGAIN if the queue is full.
- */
-int job_push(struct job_queue *queue, struct job *job);
-
-/*
- * @summary: Pop the next job off the queue. The job will be copied
- * into the buffer. This function has two different implementations
- * based on the scheduling policy chosen at compile time. If the
- * policy is FIFO, then the job will be popped off the front of the
- * queue. If the policy is PRIORITY, then the job will be popped off
- * the front of the binary heap. To see the implementation specific
- * descriptions, see the comments for job_pop in job.c.
- * @param queue: The job queue to pop from.
- * @param buf: The buffer to copy the job into.
- * @return: 0 on success, error code on failure.
- * @error: ESRCH if the queue is empty.
- */
-int job_pop(struct job_queue *queue, struct job *buf);
-
-/*
- * @summary: Free the resources used by the job queue. This function
- * has two different implementations based on the scheduling policy.
- * The queue can only be freed if there are no jobs currently in the
- * queue.
- * @param queue: The job queue to free.
- * @return: 0 on success, error code on failure.
- * @error: EBUSY if the queue is not empty.
- */
-int job_free(struct job_queue *queue);
-
-#ifdef SCHW_SCHED_FIFO
 
 /*
  * A job queue that is implemented as a circular buffer. The
@@ -106,16 +39,14 @@ struct job_fifo {
   sem_t jobs_in_q;
 };
 
-#endif // SCHW_SCHED_FIFO
-
-#ifdef SCHW_SCHED_PRIORITY
-
 /*
  * The key for the priority queue. The key contains a pointer
  * to the job and the priority of the job. The priority queue
  * is implemented as a binary heap. The keys are stored in an
  * array and the jobs are stored in a separate array. The priority
- * queue is implemented as a binary heap sorted by the priority.
+ * is stored as a member of the key struct in order to maximize
+ * cache locality. Without it, the *job pointer would have to be
+ * dereferenced to get the priority.
  */
 struct job_key {
   struct job *job;
@@ -151,22 +82,101 @@ struct job_pqueue {
   uint32_t len;
 };
 
-#endif // SCHW_SCHED_PRIORITY
+/*
+ * Initialize FIFO job queue
+ * @summary: Allocate memory for the job queue and initialize the fields.
+ * @param queue: Pointer to the job_queue struct to initialize.
+ * @param cap: The maximum number of jobs that can be stored in the queue.
+ * @return: 0 on success, or an error.
+ * @error EINVAL: The queue pointer is NULL.
+ * @error errno: If malloc, pthread_mutex_init, or sem_init fails, errno is
+ * returned.
+ */
+int job_fifo_init(struct schw_pool *pool, uint32_t cap);
 
 /*
- * A wrapper for the implementation specific job queue. This
- * allows functions to be written that can be used with either
- * implementation without knowing which implementation is being
- * used.
+ * Push a job onto the FIFO queue.
+ * @summary: Add a job at to the end of the queue if there is space.
+ * If there is no space, then the function will return an error.
+ * @param queue: Pointer to the job_queue struct that holds the
+ * job_fifo struct.
+ * @param job: Pointer to the job.
+ * @return: 0 on success. An error otherwise.
+ * @error EAGAIN: There is no space in the queue.
+ * @error EINVAL: The queue or job pointer is NULL.
  */
-struct job_queue {
-#ifdef SCHW_SCHED_FIFO
-  struct job_fifo queue;
-#endif
-#ifdef SCHW_SCHED_PRIORITY
-  struct job_pqueue queue;
-#endif
-};
+int job_fifo_push(struct schw_pool *pool, struct schw_job *job);
+
+/*
+ * Pop a job from the FIFO queue.
+ * @summary: Remove a job from the front of the queue, if there is one.
+ * If there is no job, then the function will return a non-zero errno value.
+ * @param queue: Pointer to the job_queue struct.
+ * @param buf: Pointer to the buffer to copy the job into.
+ * @return: 0 on success, an error otherwise.
+ * @error EAGAIN: There are no jobs on the queue.
+ * @error EINVAL: The queue or buf pointer is NULL.
+ */
+int job_fifo_pop(struct schw_pool *pool, struct schw_job *buf);
+
+/*
+ * Free the FIFO job queue.
+ * @summary: Free the memory allocated for the job queue and reset the fields.
+ * @param queue: Pointer to the job_queue struct to free.
+ * @return: 0 on success, or an error.
+ * @error EBUSY: The job queue is not empty and connot be freed.
+ */
+int job_fifo_free(struct schw_pool *pool);
+
+/*
+ * Initialize priority job queue.
+ * @summary: Allocate memory for the job queue and initialize the fields.
+ * @param pqueue: Pointer to the job_pqueue struct to initialize.
+ * @param cap: The maximum number of jobs that can be stored in the queue.
+ * For now, this cannot be changed after initialization.
+ * @return: 0 on success, or an error.
+ * @error EINVAL: The queue pointer is NULL.
+ * @error errno: If malloc failed, the error code errno is returned.
+ */
+int job_pqueue_init(struct schw_pool *pool, uint32_t cap);
+
+/*
+ * Push a job onto the priority queue.
+ * @summary: Push a job on the priority queue. The job's data is copied into
+ * the queue. A lower priority number correlates with a higher priority. If
+ * there is no space in the queue, the function will return an error.
+ * @param pqueue: Priority Job Queue
+ * @param job: Job to push to the queue. The job is copied, so the passed
+ * in job can be discarded after the call.
+ * @param priority: The job's priority. Lower number = Higher priority.
+ * @return: 0 on success, or an error.
+ * @error EAGAIN: There is no space in the queue.
+ * @error EINVAL: The queue or job pointer is NULL.
+ * @error errno: If sem_trywait fails, errno is returned.
+ */
+int job_pqueue_push(struct schw_pool *pool, struct schw_job *job);
+
+/*
+ * Pop a job off the queue.
+ * @summary: Pops the highest priority job off the queue. Copies the
+ * job into buf.
+ * @param pqueue: Job priority queue.
+ * @param buf: Buffer to copy the job that was popped off the queue.
+ * @return: 0 on success, or an error.
+ * @return EAGAIN: There are no jobs in the queue.
+ * @return EINVAL: The queue or buf pointer is NULL.
+ */
+int job_pqueue_pop(struct schw_pool *pool, struct schw_job *buf);
+
+/*
+ * Frees the priority job queue.
+ * @summary: Frees the priority job queue. If the queue is not empty,
+ * EBUSY is returned.
+ * @param pqueue: Job priority queue.
+ * @return: 0 on success, or an error.
+ * @error EBUSY: The queue is not empty.
+ */
+int job_pqueue_free(struct schw_pool *pool);
 
 #ifdef __cplusplus
 }

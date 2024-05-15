@@ -29,7 +29,6 @@ static void *start_thread(void *arg);
  * thread, and the thread pool.
  */
 struct start_thread_arg {
-  struct job_queue *queue;
   struct thread *thread;
   struct schw_pool *pool;
 };
@@ -51,7 +50,6 @@ int thread_pool_init(struct schw_pool *pool, uint32_t num_threads) {
   int err = 0;
   for (; threads != pool->threads + num_threads; threads++) {
     struct start_thread_arg *arg = malloc(sizeof(struct start_thread_arg));
-    arg->queue = pool->queue;
     arg->pool = pool;
     arg->thread = threads;
     if (arg == NULL) {
@@ -94,7 +92,7 @@ int thread_pool_free(struct schw_pool *pool) {
 
 static void *start_thread(void *arg) {
   struct start_thread_arg *t_arg = (struct start_thread_arg *)arg;
-  struct job_queue *queue = t_arg->queue;
+  struct schw_pool *pool = t_arg->pool;
   int error = 0;
   struct job j = {0};
   // Allow thread to be cancelled at cleanup points

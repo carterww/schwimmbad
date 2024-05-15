@@ -13,29 +13,34 @@ jid schw_push(struct schw_pool *pool, struct schw_job *job) {
   if (!job->job_func)
     return -1;
 
-  struct job j = {0};
   pthread_spin_lock(&pool->jid_helper.lock);
-  j.id = pool->jid_helper.current;
+  job->id = pool->jid_helper.current;
   if (unlikely(pool->jid_helper.current == INT64_MAX))
     pool->jid_helper.current = -1;
   ++pool->jid_helper.current;
   pthread_spin_unlock(&pool->jid_helper.lock);
-  j.job = *job;
 
-  if (job_push(pool->queue, &j) != 0)
+
+  if (pool->push_job(pool, job) != 0)
     return -1;
-  return j.id;
+
+  return job->id;
 }
 
 int schw_init(struct schw_pool *pool, uint32_t num_threads,
-              uint32_t queue_len) {
+              uint32_t queue_len, enum schw_job_queue_policy policy) {
 
   if (pool == NULL)
     return EINVAL;
-  pool->queue = malloc(sizeof(struct job_queue));
-  if (pool->queue == NULL)
-    return errno;
-  int err = job_init(pool->queue, queue_len);
+
+  int err = 0;
+  if (policy == FIFO)
+    err = job_fifo_init(pool, queue_len);
+  else if (policy == PRIORITY)
+    err = job_pqueue_init(pool, queue_len);
+  else
+    return EINVAL;
+
   if (err != 0)
     return err;
 
@@ -46,6 +51,8 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads,
   pool->jid_helper.current = 0;
   pthread_spin_init(&pool->jid_helper.lock, 0);
 
+  pool->policy = policy;
+
   return 0;
 }
 
@@ -53,7 +60,9 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads,
 // frees to make sure they are always called
 // together.
 int schw_free(struct schw_pool *pool) {
-  job_free(pool->queue);
+  if (pool == NULL)
+    return EINVAL;
+  job_free(pool);
   thread_pool_free(pool);
   return 0;
 }
@@ -69,12 +78,24 @@ uint32_t schw_working_threads(struct schw_pool *pool) {
 
 // TODO: same as schw_threads
 uint32_t schw_queue_len(struct schw_pool *pool) {
-  return pool->queue->queue.len;
+  if (pool->policy == FIFO) {
+    return pool->fqueue->len;
+  } else if (pool->policy == PRIORITY) {
+    return pool->pqueue->len;
+  } else {
+    return -1;
+  }
 }
 
 // TODO: same as schw_threads
 uint32_t schw_queue_cap(struct schw_pool *pool) {
-  return pool->queue->queue.len;
+  if (pool->policy == FIFO) {
+    return pool->fqueue->cap;
+  } else if (pool->policy == PRIORITY) {
+    return pool->pqueue->cap;
+  } else {
+    return -1;
+  }
 }
 
 int schw_pool_resize(struct schw_pool *pool, int32_t change) { return 1; }

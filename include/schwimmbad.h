@@ -15,21 +15,35 @@ struct schw_jid_helper {
   pthread_spinlock_t lock;
 };
 
+enum schw_job_queue_policy {
+  FIFO,
+  PRIORITY
+};
+
 struct schw_job {
+  jid id;
   void *(*job_func)(void *arg);
   void *job_arg;
-#ifdef SCHW_SCHED_PRIORITY
   int32_t priority;
-#endif
 };
 
 struct schw_pool {
   pthread_mutex_t rwlock;
   struct schw_jid_helper jid_helper;
+  /* Pool can be either a priority queue or a FIFO queue. */
+  union {
+    struct job_pqueue *pqueue;
+    struct job_fifo *fqueue;
+  };
+  /* Job queue functions. */
+  int (*push_job)(struct schw_pool *pool, struct schw_job *job);
+  int (*pop_job)(struct schw_pool *pool, struct schw_job *buf);
+
   struct thread *threads;
-  struct job_queue *queue;
   uint32_t num_threads;
   uint32_t working_threads;
+
+  enum schw_job_queue_policy policy;
 };
 
 /*
@@ -40,10 +54,13 @@ struct schw_pool {
  * @param num_threads: The number of threads to start.
  * @param queue_len: The length of the job queue.
  * @return: 0 on success, error code on failure.
+ * @error EINVAL: num_threads is 0, queue_len is 0, pool is NULL,
+ * policy is invalid.
  * @error: errno if malloc, pthread_create, pthread_mutex_init, or
  * sem_init fails.
  */
-int schw_init(struct schw_pool *pool, uint32_t num_threads, uint32_t queue_len);
+int schw_init(struct schw_pool *pool, uint32_t num_threads, uint32_t queue_len,
+    enum schw_job_queue_policy policy);
 
 /*
  * @summary: Free the thread pool and all of its resources. If there are
@@ -70,6 +87,29 @@ int schw_free(struct schw_pool *pool);
  * @error: -1 if the job queue is full.
  */
 jid schw_push(struct schw_pool *pool, struct schw_job *job);
+
+/*
+ * @summary: Cancel a job in the queue. If the job has not been started,
+ * then it will be removed from the queue. If the job has already started,
+ * an attempt to cancel it will be made. If the job has already finished
+ * (or does not exist), then the function will return an error.
+ * @param pool: The thread pool to cancel the job from.
+ * @param id: The job id of the job to cancel.
+ * @return: 0 on success, error code on failure.
+ * @error: EINVAL if the job id is invalid (does not exist/has already
+ * finished).
+ * @error: EBUSY if the job has already started and cannot be cancelled.
+ * @error: errno if pthread_cancel fails.
+ */
+int schw_cancel(struct schw_pool *pool, jid id);
+
+/*
+ * @summary: Wait for all jobs to finish. This function will block until
+ * all the jobs in the queue have finished.
+ * @param pool: The thread pool to wait on.
+ * @return: 0 on success, error code on failure.
+ */
+int schw_wait_all(struct schw_pool *pool);
 
 /*
  * @param pool: The thread pool to query.
