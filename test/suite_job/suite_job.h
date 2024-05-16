@@ -3,14 +3,13 @@
 
 #define CAP 10
 
-extern struct job_queue queue;
-
-void setUp(void);
-void tearDown(void);
+extern struct schw_pool pool;
 
 void run_common_tests(void);
 
-void test_job_queue_common_init(void);
+void test_job_queue_common_push_NULL(void);
+void test_job_queue_common_pop_NULL(void);
+
 void test_job_queue_common_push(void);
 void test_job_queue_common_pop(void);
 

@@ -1,19 +1,20 @@
+#include "job.h"
 #include "unity.h"
 
 #include <pthread.h>
 
 #include "schwimmbad.h"
 #include "thread.h"
-#include "job.h"
 
 #define NUM_THREADS 2
 
+static struct job_fifo queue = { 0 };
 static struct schw_pool pool = { 0 };
-static struct job_queue queue = { 0 };
 
 void setUp(void) {
-  // If no queue, thread will dereference a NULL pointer.
-  pool.queue = &queue;
+  // Without job queue ptr, thread pool
+  // init will dereference a null pointer.
+  pool.fqueue = &queue;
   int init_res = thread_pool_init(&pool, NUM_THREADS);
 }
 

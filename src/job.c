@@ -111,9 +111,16 @@ static struct job_key bheap_pop(struct job_key *keys, uint32_t len);
 static void bheap_heapify(struct job_key *keys, uint32_t len);
 
 int job_pqueue_init(struct schw_pool *pool, uint32_t cap) {
-  if (queue == NULL) {
-    return EINVAL;
+  pool->pqueue = malloc(sizeof(struct job_pqueue));
+  if (unlikely(pool->pqueue == NULL)) {
+    return errno;
   }
+
+  pool->push_job = job_pqueue_push;
+  pool->pop_job = job_pqueue_pop;
+
+  struct job_pqueue *queue = pool->pqueue;
+
   struct job_key *keys = malloc(cap * sizeof(struct job_key));
   if (unlikely(keys == NULL)) {
     return errno;
@@ -123,6 +130,7 @@ int job_pqueue_init(struct schw_pool *pool, uint32_t cap) {
   if (unlikely(job_pool == NULL)) {
     goto free_keys;
   }
+
   // Initialize the job pool as linked list of free blocks.
   for (uint32_t i = 0; i < cap - 1; ++i) {
     job_pool[i].next_free = &job_pool[i + 1];
@@ -154,13 +162,16 @@ free_job_pool:
   free(job_pool);
 free_keys:
   free(keys);
+free_queue:
+  free(queue);
   return errno;
 }
 
-int job_pqueue_push(struct schw_pool *pool, struct job *job) {
-  if (!(job && queue)) {
+int job_pqueue_push(struct schw_pool *pool, struct schw_job *job) {
+  if (!(job && pool)) {
     return EINVAL;
   }
+  struct job_pqueue *queue = pool->pqueue;
   if (sem_trywait(&queue->free_slots)) {
     return errno;
   }
@@ -172,13 +183,13 @@ int job_pqueue_push(struct schw_pool *pool, struct job *job) {
   }
 
   struct job_key new_key = {
-      .priority = job->job.priority,
+      .priority = job->priority,
       .job = queue->first_free,
   };
   bheap_push(queue->keys, queue->len, &new_key);
 
   struct job *next_free = queue->first_free->next_free;
-  *queue->first_free = *job;
+  queue->first_free->job = *job;
   queue->first_free = next_free;
   ++queue->len;
 
@@ -187,17 +198,18 @@ int job_pqueue_push(struct schw_pool *pool, struct job *job) {
   return 0;
 }
 
-int job_pqueue_pop(struct schw_pool *pool, struct job *buf) {
-  if (!(queue && buf)) {
+int job_pqueue_pop(struct schw_pool *pool, struct schw_job *buf) {
+  if (!(pool && buf)) {
     return EINVAL;
   }
+  struct job_pqueue *queue = pool->pqueue;
   if (sem_trywait(&queue->jobs_in_q)) {
     return errno;
   }
   pthread_mutex_lock(&queue->rwlock);
 
   struct job_key key = bheap_pop(queue->keys, queue->len);
-  *buf = *key.job;
+  *buf = key.job->job;
 
   key.job->next_free = queue->first_free;
   queue->first_free = key.job;
@@ -209,6 +221,7 @@ int job_pqueue_pop(struct schw_pool *pool, struct job *buf) {
 }
 
 int job_pqueue_free(struct schw_pool *pool) {
+  struct job_pqueue *queue = pool->pqueue;
   pthread_mutex_lock(&queue->rwlock);
   if (queue->len > 0) {
     pthread_mutex_unlock(&queue->rwlock);

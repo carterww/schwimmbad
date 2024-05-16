@@ -52,8 +52,18 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads,
   pthread_spin_init(&pool->jid_helper.lock, 0);
 
   pool->policy = policy;
+  pool->cb = NULL;
+  pool->cb_arg = NULL;
 
   return 0;
+}
+
+void schw_set_callback(struct schw_pool *pool, job_cb cb, void *arg) {
+  if (pool == NULL)
+    return;
+  
+  pool->cb = cb;
+  pool->cb_arg = arg;
 }
 
 // TODO: Move checks to this function from the two
@@ -62,7 +72,12 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads,
 int schw_free(struct schw_pool *pool) {
   if (pool == NULL)
     return EINVAL;
-  job_free(pool);
+  if (pool->policy == FIFO)
+    return job_fifo_free(pool);
+  else if (pool->policy == PRIORITY)
+    return job_pqueue_free(pool);
+  else
+    return EINVAL;
   thread_pool_free(pool);
   return 0;
 }
@@ -71,12 +86,10 @@ int schw_free(struct schw_pool *pool) {
 // and correctness of value
 uint32_t schw_threads(struct schw_pool *pool) { return pool->num_threads; }
 
-// TODO: same as schw_threads
 uint32_t schw_working_threads(struct schw_pool *pool) {
   return pool->working_threads;
 }
 
-// TODO: same as schw_threads
 uint32_t schw_queue_len(struct schw_pool *pool) {
   if (pool->policy == FIFO) {
     return pool->fqueue->len;
@@ -87,7 +100,6 @@ uint32_t schw_queue_len(struct schw_pool *pool) {
   }
 }
 
-// TODO: same as schw_threads
 uint32_t schw_queue_cap(struct schw_pool *pool) {
   if (pool->policy == FIFO) {
     return pool->fqueue->cap;

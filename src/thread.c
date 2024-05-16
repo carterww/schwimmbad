@@ -9,6 +9,7 @@
 
 #include "common.h"
 #include "job.h"
+#include "schwimmbad.h"
 
 /*
  * Main thread loop for worker threads.
@@ -34,9 +35,6 @@ struct start_thread_arg {
 };
 
 int thread_pool_init(struct schw_pool *pool, uint32_t num_threads) {
-  if (pool == NULL) {
-    return EINVAL;
-  }
   struct thread *threads = malloc(num_threads * sizeof(struct thread));
   if (unlikely(threads == NULL)) {
     return errno;
@@ -71,9 +69,6 @@ int thread_pool_init(struct schw_pool *pool, uint32_t num_threads) {
 }
 
 int thread_pool_free(struct schw_pool *pool) {
-  if (pool == NULL) {
-    return EINVAL;
-  }
   pthread_mutex_lock(&pool->rwlock);
   if (pool->working_threads > 0) {
     pthread_mutex_unlock(&pool->rwlock);
@@ -93,40 +88,50 @@ int thread_pool_free(struct schw_pool *pool) {
 static void *start_thread(void *arg) {
   struct start_thread_arg *t_arg = (struct start_thread_arg *)arg;
   struct schw_pool *pool = t_arg->pool;
+  struct thread *thread = t_arg->thread;
+  sem_t *jobs_in_q;
+
+  if (pool->policy == FIFO)
+    jobs_in_q = &pool->fqueue->jobs_in_q;
+  else if (pool->policy == PRIORITY)
+    jobs_in_q = &pool->pqueue->jobs_in_q;
+  else
+    return (void *)EINVAL;
+
   int error = 0;
-  struct job j = {0};
+  struct schw_job j = {0};
   // Allow thread to be cancelled at cleanup points
   error = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-  if (error != 0)
-    goto error;
   error |= pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
   if (error != 0)
     goto error;
 
-  t_arg->thread->job_id = -1;
+  thread->job_id = -1;
   // Main thread loop
   while (1) {
     // Wait for a job to be available. This is a cancellation point.
-    while (sem_wait(&queue->queue.jobs_in_q) == -1 && errno == EINTR)
+    while (sem_wait(jobs_in_q) == -1 && errno == EINTR)
       ;
-    pthread_mutex_lock(&t_arg->pool->rwlock);
-    ++t_arg->pool->working_threads;
-    pthread_mutex_unlock(&t_arg->pool->rwlock);
+    // NOTE: This is _Atomic, so no need for a lock
+    ++pool->working_threads;
 
     // Pop jobs until the queue is empty
-    while (job_pop(queue, &j) == 0) {
-      t_arg->thread->job_id = j.id;
-      void *res = j.job.job_func(j.job.job_arg);
+    while (pool->pop_job(pool, &j) == 0) {
+      thread->job_id = j.id;
+      void *res = j.job_func(j.job_arg);
+      // Call the job done callback if it exists
+      if (pool->cb != NULL)
+        pool->cb(j.id, pool->cb_arg);
     }
 
-    pthread_mutex_lock(&t_arg->pool->rwlock);
-    --t_arg->pool->working_threads;
-    pthread_mutex_unlock(&t_arg->pool->rwlock);
+    --pool->working_threads;
+
+    thread->job_id = -1;
   }
 
 error:
   free(arg);
-  return (void *)error; // Leave this cast for now, but change it later
+  return (void *)(long)error;
 }
 
 #ifdef THREAD_POOL_DYNAMIC_SIZING

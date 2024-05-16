@@ -27,6 +27,8 @@ struct schw_job {
   int32_t priority;
 };
 
+typedef void (*job_cb)(jid id, void *arg);
+
 struct schw_pool {
   pthread_mutex_t rwlock;
   struct schw_jid_helper jid_helper;
@@ -41,9 +43,13 @@ struct schw_pool {
 
   struct thread *threads;
   uint32_t num_threads;
-  uint32_t working_threads;
+  _Atomic(uint32_t) working_threads;
 
   enum schw_job_queue_policy policy;
+
+  // User defined callback for when a job is done.
+  job_cb cb;
+  void *cb_arg;
 };
 
 /*
@@ -72,6 +78,20 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads, uint32_t queue_len,
  * not empty.
  */
 int schw_free(struct schw_pool *pool);
+
+/*
+ * @summary: Set a pool's callback function for when a job is completed.
+ * Allows the user to be notified when a job is done by passing the
+ * job id and the user defined argument to the callback function.
+ * @param pool: The thread pool to set the callback for.
+ * @param job_done_cb: The callback function to call when a job is done.
+ * Pass NULL to remove the callback.
+ * @param arg: The argument to pass to the callback function.
+ * @return: void
+ * @note: This is global for the entire pool. Each time a job completes,
+ * it will be called.
+ */
+void schw_set_callback(struct schw_pool *pool, job_cb cb, void *arg);
 
 /*
  * @summary: Push a job onto the queue. The job will be copied
