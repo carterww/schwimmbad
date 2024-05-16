@@ -2,11 +2,16 @@
 #define SCHWIMMBAD_H
 
 #include <pthread.h>
+#include <sched.h>
+#include <semaphore.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define SCHW_SIGMASK_WAIT (1 << 0)
+#define SCHW_SIGMASK_PAUSE (1 << 1)
 
 typedef int64_t jid;
 
@@ -122,14 +127,6 @@ jid schw_push(struct schw_pool *pool, struct schw_job *job);
  * @error: errno if pthread_cancel fails.
  */
 int schw_cancel(struct schw_pool *pool, jid id);
-
-/*
- * @summary: Wait for all jobs to finish. This function will block until
- * all the jobs in the queue have finished.
- * @param pool: The thread pool to wait on.
- * @return: 0 on success, error code on failure.
- */
-int schw_wait_all(struct schw_pool *pool);
 
 /*
  * @param pool: The thread pool to query.

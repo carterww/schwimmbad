@@ -2,15 +2,17 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "common.h"
 #include "job.h"
 #include "thread.h"
 
 jid schw_push(struct schw_pool *pool, struct schw_job *job) {
-  if (!job->job_func)
+  if (!job || !job->job_func)
     return -1;
 
   pthread_spin_lock(&pool->jid_helper.lock);
@@ -52,6 +54,8 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads,
   pthread_spin_init(&pool->jid_helper.lock, 0);
 
   pool->policy = policy;
+  pool->sigmask = 0;
+
   pool->cb = NULL;
   pool->cb_arg = NULL;
 
@@ -91,13 +95,13 @@ uint32_t schw_working_threads(struct schw_pool *pool) {
 }
 
 uint32_t schw_queue_len(struct schw_pool *pool) {
+  uint32_t len = 0;
   if (pool->policy == FIFO) {
-    return pool->fqueue->len;
+    len = pool->fqueue->len;
   } else if (pool->policy == PRIORITY) {
-    return pool->pqueue->len;
-  } else {
-    return -1;
+    len = pool->pqueue->len;
   }
+  return len;
 }
 
 uint32_t schw_queue_cap(struct schw_pool *pool) {

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -112,20 +113,24 @@ static void *start_thread(void *arg) {
     // Wait for a job to be available. This is a cancellation point.
     while (sem_wait(jobs_in_q) == -1 && errno == EINTR)
       ;
-    // NOTE: This is _Atomic, so no need for a lock
     ++pool->working_threads;
 
-    // Pop jobs until the queue is empty
-    while (pool->pop_job(pool, &j) == 0) {
+    do {
+      int pop_res = pool->pop_job(pool, &j);
+      if (pop_res != 0)
+        break;
+
       thread->job_id = j.id;
       void *res = j.job_func(j.job_arg);
+
       // Call the job done callback if it exists
       if (pool->cb != NULL)
         pool->cb(j.id, pool->cb_arg);
-    }
+
+    // If the job queue is not empty, continue to pop jobs
+    } while (sem_trywait(jobs_in_q) == 0);
 
     --pool->working_threads;
-
     thread->job_id = -1;
   }
 

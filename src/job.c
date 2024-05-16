@@ -74,9 +74,6 @@ int job_fifo_pop(struct schw_pool *pool, struct schw_job *buf) {
     return EINVAL;
   }
   struct job_fifo *queue = pool->fqueue;
-  if (sem_trywait(&queue->jobs_in_q)) {
-    return errno;
-  }
   pthread_mutex_lock(&queue->rwlock);
 
   *buf = queue->job_pool[queue->head].job;
@@ -203,9 +200,6 @@ int job_pqueue_pop(struct schw_pool *pool, struct schw_job *buf) {
     return EINVAL;
   }
   struct job_pqueue *queue = pool->pqueue;
-  if (sem_trywait(&queue->jobs_in_q)) {
-    return errno;
-  }
   pthread_mutex_lock(&queue->rwlock);
 
   struct job_key key = bheap_pop(queue->keys, queue->len);
