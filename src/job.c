@@ -7,6 +7,51 @@
 #include <string.h>
 
 #include "common.h"
+#include "schwimmbad.h"
+
+static inline int __job_fifo_init(struct job_fifo *queue, uint32_t cap) {
+  /* Allocations */
+  struct job *jobs = malloc(cap * sizeof(struct job));
+  if (unlikely(jobs == NULL)) {
+    goto unwind_0;
+  }
+  /* Initialize semaphore and mutexes. */
+  if (pthread_mutex_init(&queue->rwlock, NULL)) {
+    goto unwind_1;
+  }
+  if (sem_init(&queue->free_slots, 0, cap)) {
+    goto unwind_2;
+  }
+  if (sem_init(&queue->jobs_in_q, 0, 0)) {
+    goto unwind_3;
+  }
+
+  queue->job_pool = jobs;
+  queue->head = 0;
+  queue->tail = 0;
+  queue->cap = cap;
+  queue->len = 0;
+  return 0;
+// Fall throughs to free resources if an error occurs.
+unwind_3:
+  sem_destroy(&queue->free_slots);
+unwind_2:
+  pthread_mutex_destroy(&queue->rwlock);
+unwind_1:
+  free(jobs);
+unwind_0:
+  free(queue);
+  return errno;
+}
+
+static inline void __job_fifo_free(struct job_fifo *queue) {
+  /* Free resources */
+  pthread_mutex_destroy(&queue->rwlock);
+  free(queue->job_pool);
+  sem_destroy(&queue->free_slots);
+  sem_destroy(&queue->jobs_in_q);
+  free(queue);
+}
 
 int job_fifo_init(struct schw_pool *pool, uint32_t cap) {
   pool->fqueue = malloc(sizeof(struct job_fifo));
@@ -14,49 +59,25 @@ int job_fifo_init(struct schw_pool *pool, uint32_t cap) {
     return errno;
   }
 
-  struct job_fifo *queue = pool->fqueue;
-
   pool->push_job = job_fifo_push;
   pool->pop_job = job_fifo_pop;
 
-  struct job *jobs = malloc(cap * sizeof(struct job));
-  if (unlikely(jobs == NULL)) {
-    goto free_queue;
-  }
-  if (pthread_mutex_init(&queue->rwlock, NULL)) {
-    goto free_jobs;
-  }
-  queue->job_pool = jobs;
-  queue->head = 0;
-  queue->tail = 0;
-  queue->cap = cap;
-  queue->len = 0;
-  if (sem_init(&queue->free_slots, 0, cap)) {
-    goto free_rwlock;
-  }
-  if (sem_init(&queue->jobs_in_q, 0, 0)) {
-    goto free_free_slots;
-  }
-  return 0;
-// Fall throughs to free resources if an error occurs.
-free_free_slots:
-  sem_destroy(&queue->free_slots);
-free_rwlock:
-  pthread_mutex_destroy(&queue->rwlock);
-free_jobs:
-  free(jobs);
-free_queue:
-  free(queue);
-  return errno;
+  return __job_fifo_init(pool->fqueue, cap);
 }
 
-int job_fifo_push(struct schw_pool *pool, struct schw_job *job) {
+int job_fifo_push(struct schw_pool *pool, struct schw_job *job, uint32_t flags) {
   if (!(job && pool)) {
     return EINVAL;
   }
   struct job_fifo *queue = pool->fqueue;
-  if (sem_trywait(&queue->free_slots)) {
-    return errno;
+  // If queue is full and flag is set to block, then wait for a slot.
+  if (flags & SCHW_PUSH_BLOCK) {
+    while (sem_wait(&queue->free_slots) == -1 && errno == EINTR)
+      ;
+  } else {
+    if (sem_trywait(&queue->free_slots) == -1) {
+      return errno;
+    }
   }
   pthread_mutex_lock(&queue->rwlock);
 
@@ -88,15 +109,17 @@ int job_fifo_pop(struct schw_pool *pool, struct schw_job *buf) {
 int job_fifo_free(struct schw_pool *pool) {
   struct job_fifo *queue = pool->fqueue;
   pthread_mutex_lock(&queue->rwlock);
-  if (queue->len > 0) {
+
+  // Ensure queue is empty before freeing
+  int sval;
+  sem_getvalue(&queue->jobs_in_q, &sval);
+  if (sval > 0) {
     pthread_mutex_unlock(&queue->rwlock);
     return EBUSY;
   }
+
   pthread_mutex_unlock(&queue->rwlock);
-  pthread_mutex_destroy(&queue->rwlock);
-  free(queue->job_pool);
-  sem_destroy(&queue->free_slots);
-  sem_destroy(&queue->jobs_in_q);
+  __job_fifo_free(queue);
   return 0;
 }
 
@@ -107,6 +130,58 @@ static void bheap_push(struct job_key *keys, uint32_t len, struct job_key *key);
 static struct job_key bheap_pop(struct job_key *keys, uint32_t len);
 static void bheap_heapify(struct job_key *keys, uint32_t len);
 
+static inline void __job_pqueue_init_jobll(struct job *job_pool, uint32_t cap) {
+  for (uint32_t i = 0; i < cap - 1; ++i) {
+    job_pool[i].next_free = &job_pool[i + 1];
+  }
+  job_pool[cap - 1].next_free = NULL;
+}
+
+static inline int __job_pqueue_init(struct job_pqueue *queue, uint32_t cap) {
+  /* Allocations */
+  struct job_key *keys = malloc(cap * sizeof(struct job_key));
+  if (unlikely(keys == NULL)) {
+    goto unwind_0;
+  }
+
+  struct job *job_pool = malloc(cap * sizeof(struct job));
+  if (unlikely(job_pool == NULL)) {
+    goto unwind_1;
+  }
+  __job_pqueue_init_jobll(job_pool, cap);
+
+  /* Initialize semaphore and mutexes. */
+  if (pthread_mutex_init(&queue->rwlock, NULL)) {
+    goto unwind_2;
+  }
+  if (sem_init(&queue->free_slots, 0, cap)) {
+    goto unwind_3;
+  }
+  if (sem_init(&queue->jobs_in_q, 0, 0)) {
+    goto unwind_4;
+  }
+
+  queue->keys = keys;
+  queue->job_pool = job_pool;
+  queue->first_free = job_pool;
+  queue->cap = cap;
+  queue->len = 0;
+  return 0;
+
+// Fall throughs to free resources if an error occurs.
+unwind_4:
+  sem_destroy(&queue->free_slots);
+unwind_3:
+  pthread_mutex_destroy(&queue->rwlock);
+unwind_2:
+  free(job_pool);
+unwind_1:
+  free(keys);
+unwind_0:
+  free(queue);
+  return errno;
+}
+
 int job_pqueue_init(struct schw_pool *pool, uint32_t cap) {
   pool->pqueue = malloc(sizeof(struct job_pqueue));
   if (unlikely(pool->pqueue == NULL)) {
@@ -116,61 +191,21 @@ int job_pqueue_init(struct schw_pool *pool, uint32_t cap) {
   pool->push_job = job_pqueue_push;
   pool->pop_job = job_pqueue_pop;
 
-  struct job_pqueue *queue = pool->pqueue;
-
-  struct job_key *keys = malloc(cap * sizeof(struct job_key));
-  if (unlikely(keys == NULL)) {
-    return errno;
-  }
-
-  struct job *job_pool = malloc(cap * sizeof(struct job));
-  if (unlikely(job_pool == NULL)) {
-    goto free_keys;
-  }
-
-  // Initialize the job pool as linked list of free blocks.
-  for (uint32_t i = 0; i < cap - 1; ++i) {
-    job_pool[i].next_free = &job_pool[i + 1];
-  }
-  job_pool[cap - 1].next_free = NULL;
-
-  if (pthread_mutex_init(&queue->rwlock, NULL)) {
-    goto free_job_pool;
-  }
-  queue->keys = keys;
-  queue->job_pool = job_pool;
-  queue->first_free = job_pool;
-  if (sem_init(&queue->free_slots, 0, cap)) {
-    goto free_rwlock;
-  }
-  if (sem_init(&queue->jobs_in_q, 0, 0)) {
-    goto free_free_slots;
-  }
-  queue->cap = cap;
-  queue->len = 0;
-
-  return 0;
-// Fall throughs to free resources if an error occurs.
-free_free_slots:
-  sem_destroy(&queue->free_slots);
-free_rwlock:
-  pthread_mutex_destroy(&queue->rwlock);
-free_job_pool:
-  free(job_pool);
-free_keys:
-  free(keys);
-free_queue:
-  free(queue);
-  return errno;
+  return __job_pqueue_init(pool->pqueue, cap);
 }
 
-int job_pqueue_push(struct schw_pool *pool, struct schw_job *job) {
+int job_pqueue_push(struct schw_pool *pool, struct schw_job *job, uint32_t flags) {
   if (!(job && pool)) {
     return EINVAL;
   }
   struct job_pqueue *queue = pool->pqueue;
-  if (sem_trywait(&queue->free_slots)) {
-    return errno;
+  if (flags & SCHW_PUSH_BLOCK) {
+    while (sem_wait(&queue->free_slots) == -1 && errno == EINTR)
+      ;
+  } else {
+    if (sem_trywait(&queue->free_slots) == -1) {
+      return errno;
+    }
   }
   pthread_mutex_lock(&queue->rwlock);
 

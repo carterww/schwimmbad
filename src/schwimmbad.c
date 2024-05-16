@@ -2,7 +2,6 @@
 
 #include <errno.h>
 #include <pthread.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -11,7 +10,7 @@
 #include "job.h"
 #include "thread.h"
 
-jid schw_push(struct schw_pool *pool, struct schw_job *job) {
+jid schw_push(struct schw_pool *pool, struct schw_job *job, uint32_t flags) {
   if (!job || !job->job_func)
     return -1;
 
@@ -23,10 +22,14 @@ jid schw_push(struct schw_pool *pool, struct schw_job *job) {
   pthread_spin_unlock(&pool->jid_helper.lock);
 
 
-  if (pool->push_job(pool, job) != 0)
+  if (pool->push_job(pool, job, flags) != 0)
     return -1;
 
   return job->id;
+}
+
+jid schw_push_block(struct schw_pool *pool, struct schw_job *job) {
+
 }
 
 int schw_init(struct schw_pool *pool, uint32_t num_threads,
@@ -54,7 +57,6 @@ int schw_init(struct schw_pool *pool, uint32_t num_threads,
   pthread_spin_init(&pool->jid_helper.lock, 0);
 
   pool->policy = policy;
-  pool->sigmask = 0;
 
   pool->cb = NULL;
   pool->cb_arg = NULL;
@@ -96,22 +98,14 @@ uint32_t schw_working_threads(struct schw_pool *pool) {
 
 uint32_t schw_queue_len(struct schw_pool *pool) {
   uint32_t len = 0;
-  if (pool->policy == FIFO) {
-    len = pool->fqueue->len;
-  } else if (pool->policy == PRIORITY) {
-    len = pool->pqueue->len;
-  }
+  QUEUE_GET_MEMBER(pool, len, len);
   return len;
 }
 
 uint32_t schw_queue_cap(struct schw_pool *pool) {
-  if (pool->policy == FIFO) {
-    return pool->fqueue->cap;
-  } else if (pool->policy == PRIORITY) {
-    return pool->pqueue->cap;
-  } else {
-    return -1;
-  }
+  uint32_t cap = 0;
+  QUEUE_GET_MEMBER(pool, cap, cap);
+  return cap;
 }
 
 int schw_pool_resize(struct schw_pool *pool, int32_t change) { return 1; }

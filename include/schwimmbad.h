@@ -10,8 +10,7 @@
 extern "C" {
 #endif
 
-#define SCHW_SIGMASK_WAIT (1 << 0)
-#define SCHW_SIGMASK_PAUSE (1 << 1)
+#define SCHW_PUSH_BLOCK 0x1
 
 typedef int64_t jid;
 
@@ -43,7 +42,7 @@ struct schw_pool {
     struct job_fifo *fqueue;
   };
   /* Job queue functions. */
-  int (*push_job)(struct schw_pool *pool, struct schw_job *job);
+  int (*push_job)(struct schw_pool *pool, struct schw_job *job, uint32_t flags);
   int (*pop_job)(struct schw_pool *pool, struct schw_job *buf);
 
   struct thread *threads;
@@ -111,7 +110,7 @@ void schw_set_callback(struct schw_pool *pool, job_cb cb, void *arg);
  * @return: The job id of the pushed job on success, -1 on failure.
  * @error: -1 if the job queue is full.
  */
-jid schw_push(struct schw_pool *pool, struct schw_job *job);
+jid schw_push(struct schw_pool *pool, struct schw_job *job, uint32_t flags);
 
 /*
  * @summary: Cancel a job in the queue. If the job has not been started,

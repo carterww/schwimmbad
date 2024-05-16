@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -92,12 +91,7 @@ static void *start_thread(void *arg) {
   struct thread *thread = t_arg->thread;
   sem_t *jobs_in_q;
 
-  if (pool->policy == FIFO)
-    jobs_in_q = &pool->fqueue->jobs_in_q;
-  else if (pool->policy == PRIORITY)
-    jobs_in_q = &pool->pqueue->jobs_in_q;
-  else
-    return (void *)EINVAL;
+  QUEUE_GET_MEMBER_PTR(pool, jobs_in_q, jobs_in_q);
 
   int error = 0;
   struct schw_job j = {0};

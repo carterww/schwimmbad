@@ -11,17 +11,18 @@ static void *hello_world(void *arg) {
 }
 
 int main(void) {
-  int init_res = schw_init(&pool, 5, 10, FIFO);
+  int init_res = schw_init(&pool, 5, 10, PRIORITY);
 
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < 500; i++) {
     struct schw_job job = {
       .job_arg = (void *)(long)i,
       .job_func = hello_world,
+      .priority = 500 - i
     };
-    schw_push(&pool, &job);
+    schw_push(&pool, &job, SCHW_PUSH_BLOCK);
   }
 
-  schw_wait_all(&pool);
+  sleep(15);
 
   int free_res = schw_free(&pool);
   return 0;

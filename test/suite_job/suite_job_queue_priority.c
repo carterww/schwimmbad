@@ -49,7 +49,7 @@ void test_job_queue_priority_push(void) {
     struct schw_job job = { 0 };
     job.id = CAP - i;
     job.priority = i;
-    int push_res = pool.push_job(&pool, &job);
+    int push_res = pool.push_job(&pool, &job, 0);
     TEST_ASSERT_EQUAL(0, push_res);
     TEST_ASSERT_EQUAL(i, pool.pqueue->keys[0].priority);
     // Next line is hyper impmlementation specific. If implementation

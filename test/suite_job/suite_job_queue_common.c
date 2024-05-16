@@ -9,6 +9,7 @@
 #include "unity.h"
 
 #include <errno.h>
+#include <stdio.h>
 
 #include "job.h"
 #include "suite_job.h"
@@ -18,9 +19,9 @@
  */
 void test_job_queue_common_push_NULL(void) {
   struct schw_job job = { 0 };
-  int push_res = pool.push_job(NULL, &job);
+  int push_res = pool.push_job(NULL, &job, 0);
   TEST_ASSERT_EQUAL(EINVAL, push_res);
-  int push_res2 = pool.push_job(&pool, NULL);
+  int push_res2 = pool.push_job(&pool, NULL, 0);
   TEST_ASSERT_EQUAL(EINVAL, push_res2);
 }
 
@@ -46,7 +47,7 @@ void test_job_queue_common_push(void) {
   for (jid i = 0; i < CAP; ++i) {
     struct schw_job job = { 0 };
     job.id = i;
-    int push_res = pool.push_job(&pool, &job);
+    int push_res = pool.push_job(&pool, &job, 0);
     TEST_ASSERT_EQUAL(0, push_res);
     TEST_ASSERT_EQUAL(i + 1, *len);
     int free_slots;
@@ -58,7 +59,7 @@ void test_job_queue_common_push(void) {
   }
   struct schw_job job = { 0 };
   job.id = CAP;
-  int push_res = pool.push_job(&pool, &job);
+  int push_res = pool.push_job(&pool, &job, 0);
   TEST_ASSERT_EQUAL(EAGAIN, push_res);
 }
 
@@ -78,12 +79,10 @@ void test_job_queue_common_pop_NULL(void) {
  */
 void test_job_queue_common_pop(void) {
   struct schw_job buf = { 0 };
-  int no_job_res = pool.pop_job(&pool, &buf);
-  TEST_ASSERT_EQUAL(EAGAIN, no_job_res);
   for (jid i = 0; i < CAP; ++i) {
     struct schw_job job = { 0 };
     job.id = i;
-    int push_res = pool.push_job(&pool, &job);
+    int push_res = pool.push_job(&pool, &job, 0);
   }
 
   uint32_t *len;
@@ -100,6 +99,9 @@ void test_job_queue_common_pop(void) {
   }
 
   for (jid i = 0; i < CAP; ++i) {
+    if (sem_trywait(jobs_in_q_sem) == -1) {
+      break;
+    }
     int pop_res = pool.pop_job(&pool, &buf);
     TEST_ASSERT_EQUAL(0, pop_res);
     // Don't know the order they will be popped. Just
