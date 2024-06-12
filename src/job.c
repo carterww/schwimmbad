@@ -10,20 +10,21 @@
 #include "schwimmbad.h"
 
 static inline int __job_fifo_init(struct job_fifo *queue, uint32_t cap) {
-  /* Allocations */
+  // Track errors for cleanup.
+  uint8_t rw = 0, fs = 0, jq = 0;
   struct job *jobs = malloc(cap * sizeof(struct job));
   if (unlikely(jobs == NULL)) {
-    goto unwind_0;
+    goto err;
   }
   /* Initialize semaphore and mutexes. */
-  if (pthread_mutex_init(&queue->rwlock, NULL)) {
-    goto unwind_1;
+  if ((rw = pthread_mutex_init(&queue->rwlock, NULL))) {
+    goto err;
   }
-  if (sem_init(&queue->free_slots, 0, cap)) {
-    goto unwind_2;
+  if ((fs = sem_init(&queue->free_slots, 0, cap))) {
+    goto err;
   }
-  if (sem_init(&queue->jobs_in_q, 0, 0)) {
-    goto unwind_3;
+  if ((jq = sem_init(&queue->jobs_in_q, 0, 0))) {
+    goto err;
   }
 
   queue->job_pool = jobs;
@@ -32,14 +33,15 @@ static inline int __job_fifo_init(struct job_fifo *queue, uint32_t cap) {
   queue->cap = cap;
   queue->len = 0;
   return 0;
-// Fall throughs to free resources if an error occurs.
-unwind_3:
-  sem_destroy(&queue->free_slots);
-unwind_2:
-  pthread_mutex_destroy(&queue->rwlock);
-unwind_1:
-  free(jobs);
-unwind_0:
+err:
+  if (jobs)
+    free(jobs);
+  if (rw)
+    pthread_mutex_destroy(&queue->rwlock);
+  if (fs)
+    sem_destroy(&queue->free_slots);
+  if (jq)
+    sem_destroy(&queue->jobs_in_q);
   free(queue);
   return errno;
 }
@@ -128,7 +130,6 @@ static void bheap_bup(struct job_key *keys, uint32_t idx);
 static void bheap_bdown(struct job_key *keys, uint32_t idx, uint32_t len);
 static void bheap_push(struct job_key *keys, uint32_t len, struct job_key *key);
 static struct job_key bheap_pop(struct job_key *keys, uint32_t len);
-static void bheap_heapify(struct job_key *keys, uint32_t len);
 
 static inline void __job_pqueue_init_jobll(struct job *job_pool, uint32_t cap) {
   for (uint32_t i = 0; i < cap - 1; ++i) {
@@ -138,27 +139,30 @@ static inline void __job_pqueue_init_jobll(struct job *job_pool, uint32_t cap) {
 }
 
 static inline int __job_pqueue_init(struct job_pqueue *queue, uint32_t cap) {
-  /* Allocations */
-  struct job_key *keys = malloc(cap * sizeof(struct job_key));
+  struct job_key *keys = NULL;
+  struct job *job_pool = NULL;
+  // Track errors for cleanup.
+  uint8_t rw = 0, fs = 0, jq = 0;
+  keys = malloc(cap * sizeof(struct job_key));
   if (unlikely(keys == NULL)) {
-    goto unwind_0;
+    goto err;
   }
 
-  struct job *job_pool = malloc(cap * sizeof(struct job));
+  job_pool = malloc(cap * sizeof(struct job));
   if (unlikely(job_pool == NULL)) {
-    goto unwind_1;
+    goto err;
   }
   __job_pqueue_init_jobll(job_pool, cap);
 
   /* Initialize semaphore and mutexes. */
-  if (pthread_mutex_init(&queue->rwlock, NULL)) {
-    goto unwind_2;
+  if ((rw = pthread_mutex_init(&queue->rwlock, NULL))) {
+    goto err;
   }
-  if (sem_init(&queue->free_slots, 0, cap)) {
-    goto unwind_3;
+  if ((fs = sem_init(&queue->free_slots, 0, cap))) {
+    goto err;
   }
-  if (sem_init(&queue->jobs_in_q, 0, 0)) {
-    goto unwind_4;
+  if ((jq = sem_init(&queue->jobs_in_q, 0, 0))) {
+    goto err;
   }
 
   queue->keys = keys;
@@ -168,16 +172,17 @@ static inline int __job_pqueue_init(struct job_pqueue *queue, uint32_t cap) {
   queue->len = 0;
   return 0;
 
-// Fall throughs to free resources if an error occurs.
-unwind_4:
-  sem_destroy(&queue->free_slots);
-unwind_3:
-  pthread_mutex_destroy(&queue->rwlock);
-unwind_2:
-  free(job_pool);
-unwind_1:
-  free(keys);
-unwind_0:
+err:
+  if (keys)
+    free(keys);
+  if (job_pool)
+    free(job_pool);
+  if (rw)
+    pthread_mutex_destroy(&queue->rwlock);
+  if (fs)
+    sem_destroy(&queue->free_slots);
+  if (jq)
+    sem_destroy(&queue->jobs_in_q);
   free(queue);
   return errno;
 }
@@ -318,14 +323,4 @@ static struct job_key bheap_pop(struct job_key *keys, uint32_t len) {
   keys[0] = keys[--len];
   bheap_bdown(keys, 0, len);
   return job;
-}
-
-/*
- * Construct a heap from an array which satisfies the shape property of a
- * binary heap.
- */
-static void bheap_heapify(struct job_key *keys, uint32_t len) {
-  for (uint32_t i = len / 2; i > 0; --i) {
-    bheap_bdown(keys, i, len);
-  }
 }

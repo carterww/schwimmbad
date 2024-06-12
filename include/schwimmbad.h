@@ -10,8 +10,6 @@
 extern "C" {
 #endif
 
-#define SCHW_PUSH_BLOCK 0x1
-
 typedef int64_t jid;
 
 struct schw_jid_helper {
@@ -31,29 +29,30 @@ struct schw_job {
   int32_t priority;
 };
 
-typedef void (*job_cb)(jid id, void *arg);
+typedef void (*job_cb)(jid id, void *arg, void *j_res);
+struct schw_pool;
+typedef int (*schw_push_job)(struct schw_pool *pool, struct schw_job *job, uint32_t flags);
+typedef int (*schw_pop_job)(struct schw_pool *pool, struct schw_job *buf);
 
 struct schw_pool {
-  pthread_mutex_t rwlock;
-  struct schw_jid_helper jid_helper;
-  /* Pool can be either a priority queue or a FIFO queue. */
-  union {
+  pthread_mutex_t rwlock;            // Lock for the whole thread pool (job queue doesn't use)
+  struct schw_jid_helper jid_helper; // Helper for assigning job ids
+  union {                            // Pointer to the queue
     struct job_pqueue *pqueue;
     struct job_fifo *fqueue;
   };
-  /* Job queue functions. */
-  int (*push_job)(struct schw_pool *pool, struct schw_job *job, uint32_t flags);
-  int (*pop_job)(struct schw_pool *pool, struct schw_job *buf);
-
-  struct thread *threads;
-  uint32_t num_threads;
-  _Atomic(uint32_t) working_threads;
-
-  enum schw_job_queue_policy policy;
-
-  // User defined callback for when a job is done.
-  job_cb cb;
-  void *cb_arg;
+  // End first cache line
+  schw_push_job push_job;            // Push a job onto the queue. Priority or FIFO
+  schw_pop_job pop_job;              // Pop a job from the queue. Priority or FIFO
+  enum schw_job_queue_policy policy; // The policy of the pool
+  struct thread *threads;            // Array of threads in the pool
+  uint32_t num_threads;              // Number of threads in the pool
+  _Atomic(uint32_t) working_threads; // Number of threads currently working
+  job_cb cb;                         // Callback function for when a job is done
+  void *cb_arg;                      // Argument to pass to the callback function
+  uint64_t flags;                    // Flags for the pool. For now, only SCHW_POOL_FLAG_WAIT_ALL
+  // End second cache line
+  sem_t sync;                        // Used to synchronize pool and workers, ex) schw_wait_all
 };
 
 /*
@@ -113,19 +112,12 @@ void schw_set_callback(struct schw_pool *pool, job_cb cb, void *arg);
 jid schw_push(struct schw_pool *pool, struct schw_job *job, uint32_t flags);
 
 /*
- * @summary: Cancel a job in the queue. If the job has not been started,
- * then it will be removed from the queue. If the job has already started,
- * an attempt to cancel it will be made. If the job has already finished
- * (or does not exist), then the function will return an error.
- * @param pool: The thread pool to cancel the job from.
- * @param id: The job id of the job to cancel.
- * @return: 0 on success, error code on failure.
- * @error: EINVAL if the job id is invalid (does not exist/has already
- * finished).
- * @error: EBUSY if the job has already started and cannot be cancelled.
- * @error: errno if pthread_cancel fails.
+ * @summary: Wait for all jobs to finish. This function will block until
+ * all jobs in the queue have been completed.
+ * @param pool: The thread pool to wait on.
+ * @return: void
  */
-int schw_cancel(struct schw_pool *pool, jid id);
+void schw_wait_all(struct schw_pool *pool);
 
 /*
  * @param pool: The thread pool to query.
@@ -151,8 +143,11 @@ uint32_t schw_queue_len(struct schw_pool *pool);
  */
 uint32_t schw_queue_cap(struct schw_pool *pool);
 
-int schw_pool_resize(struct schw_pool *pool, int32_t change);
-int schw_queue_resize(struct schw_pool *pool, int32_t change);
+/* Flags for the push function */
+#define SCHW_PUSH_BLOCK (1 << 0)
+
+/* Flags for the pool */
+#define SCHW_POOL_FLAG_WAIT_ALL (1 << 0)
 
 #ifdef __cplusplus
 }

@@ -4,24 +4,28 @@ set(CMAKE_C_STANDARD 11)
 
 set(CMAKE_DEBUG_POSTFIX d)
 
-set(TARGET_GROUP test CACHE STRING "Group to build")
+set(TARGET_GROUP lib CACHE STRING
+  "Group to build. Possible values are 'test', 'lib', and 'example'.")
+set(LIB_TYPE STATIC CACHE STRING
+  "Library type. Possible values are 'STATIC' and 'SHARED'.")
 set(TARGET_NAME "schwimmbad")
 
 set(BUILD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build)
-set(TEST_FIFO_DIR ${BUILD_DIR}/test_fifo)
-set(TEST_PRIORITY_DIR ${BUILD_DIR}/test_priority)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-project(${TARGET_NAME} VERSION 0.1.0)
+project(${TARGET_NAME} VERSION 1.0.0)
 
 # Include directory
 set(INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 file(GLOB_RECURSE SOURCE_FILES "src/*.c")
+add_compile_options(-Wall -Wextra -Wpedantic -Wundef -Wunreachable-code)
 
-if(TARGET_GROUP STREQUAL production)
-  add_library(${TARGET_NAME} STATIC ${SOURCE_FILES})
+if(TARGET_GROUP STREQUAL lib)
+  add_compile_options(-O2)
+
+  add_library(${TARGET_NAME} ${LIB_TYPE} ${SOURCE_FILES})
   target_include_directories(${TARGET_NAME} PUBLIC ${INCLUDE_DIRECTORIES})
 elseif(TARGET_GROUP STREQUAL test)
   include(CTest)

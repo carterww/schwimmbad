@@ -11,10 +11,6 @@
 extern "C" {
 #endif
 
-#ifndef DISABLE_DYNAMIC_SIZING
-#define THREAD_POOL_DYNAMIC_SIZING
-#endif
-
 struct thread {
   pthread_t tid;
   jid job_id;
@@ -41,11 +37,7 @@ int thread_pool_init(struct schw_pool *pool, uint32_t num_threads);
  */
 int thread_pool_free(struct schw_pool *pool);
 
-#ifdef THREAD_POOL_DYNAMIC_SIZING
-
 int thread_pool_resize(struct schw_pool *pool, int32_t change);
-
-#endif // THREAD_POOL_DYNAMIC_SIZING
 
 #ifdef __cplusplus
 }
